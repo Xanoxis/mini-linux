@@ -5,7 +5,7 @@ You could potentially even run a Minecraft server on it! I did, as a test.
 
 The OS is highly customised for my specific watch, as it has battery voltage issues and sits on charge cradle 100.01% of the time. What crashes for me, might not crash for you, feel free to customise the cpu kernel.
 
-Current version: **0.21.4**
+Current version: **0.21.4** (07.11.2026)
 
 ## Screenshots
 
