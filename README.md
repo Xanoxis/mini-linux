@@ -44,7 +44,7 @@ Current version: **0.21.4**
 | 08 | WSL | `bash build/08-boot-logo.sh` | Replaces the LG boot logo with the Mini Linux one. |
 
 Don't skip step 06. It's the only way back to Wear OS later.
-If you forget and lose your img, I can send you my Wear OS copy, for three fiddy.
+If you forget and lose your img, I can send you my Wear OS copy, for tree fiddy.
 
 After step 07, the first start takes a few minutes. Then:
 
