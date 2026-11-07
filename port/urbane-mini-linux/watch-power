@@ -1,0 +1,34 @@
+#!/bin/sh
+# watch power - reboot, power off, or restart into fastboot.
+#
+#   watch power reboot        restart the watch
+#   watch power poweroff      switch off (on the cradle the charger switches it on again)
+#   watch power fastboot      restart into the bootloader's fastboot mode
+#
+# Needs admin rights; "watch power ..." and the watch menu get them by themselves,
+# without a password (allowed for your user in /etc/sudoers.d/urbane).
+#
+# fastboot: LG's bootloader looks at a word in the SoC's internal memory (IMEM
+# 0xFE80565C) after a restart; 0x77665500 means "stay in fastboot". The kernel
+# writes it only if it has the reboot-mode driver, so it is written here too.
+IMEM_REASON=0xFE80565C
+FASTBOOT_MAGIC=0x77665500
+
+case "${1:-}" in
+	reboot) sync; exec reboot ;;
+	poweroff) sync; exec poweroff ;;
+	fastboot)
+		sync
+		if command -v devmem2 >/dev/null; then
+			devmem2 $IMEM_REASON w $FASTBOOT_MAGIC >/dev/null 2>&1 ||
+				echo "watch power: could not write the fastboot flag (devmem2)" >&2
+		elif busybox --list 2>/dev/null | grep -qx devmem; then
+			busybox devmem $IMEM_REASON 32 $FASTBOOT_MAGIC
+		else
+			echo "watch power: devmem2 missing - the watch may just restart" >&2
+		fi
+		# reboot-mode passes "bootloader" to the kernel (the same magic, if it has the driver)
+		if command -v reboot-mode >/dev/null; then exec reboot-mode bootloader; fi
+		exec reboot ;;
+	*) echo "usage: watch power reboot|poweroff|fastboot" >&2; exit 1 ;;
+esac

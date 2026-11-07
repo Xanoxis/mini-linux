@@ -1,0 +1,5 @@
+# Installed by urbane-mini-linux: the watch menu may reboot / power off without a password.
+permit nopass :wheel as root cmd /usr/bin/watch-power
+permit nopass :wheel as root cmd /usr/bin/watch-charge
+permit nopass :wheel as root cmd /usr/bin/watch-cpu
+permit nopass :wheel as root cmd /usr/bin/watch-set

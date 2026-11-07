@@ -1,0 +1,79 @@
+#!/bin/sh
+# watch rotate - turn the screen picture in 90 degree steps; touch turns with it.
+#
+#   watch rotate              show the current rotation
+#   watch rotate 0|90|180|270 turn the picture that far clockwise and keep it
+#   watch rotate cw | ccw     one step clockwise / counter-clockwise
+#   watch rotate --apply      turn the picture to the saved angle (screen start does this)
+#
+# Works from SSH too. Saved as ROTATE (watch set). The picture is turned by the
+# compositor (wlr-randr); touch by a libinput calibration matrix that udev hands to
+# the touchscreen - libinput reads it only when the screen starts, so a change
+# restarts the screen for a moment (the tmux session and its programs keep running).
+# The Mini Linux boot logo (step 08) is turned the same way, from the next start.
+set -u
+. /etc/urbane/watch.conf
+cur=${ROTATE:-0}
+
+# Wayland socket of the running screen: from foot (cage's child has WAYLAND_DISPLAY),
+# else cage's runtime dir and the first wayland-N socket in it.
+wayland_env() {
+	[ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/$WAYLAND_DISPLAY" ] && return 0
+	for p in $(pidof foot 2>/dev/null) $(pidof cage 2>/dev/null); do
+		[ -r "/proc/$p/environ" ] || continue
+		eval "$(tr '\0' '\n' <"/proc/$p/environ" | grep -E '^(XDG_RUNTIME_DIR|WAYLAND_DISPLAY)=' | sed 's/^/export /')"
+		if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+			for s in "$XDG_RUNTIME_DIR"/wayland-[0-9]*; do
+				case "$s" in *.lock) continue ;; esac
+				[ -S "$s" ] && { WAYLAND_DISPLAY=${s##*/}; export WAYLAND_DISPLAY; break; }
+			done
+		fi
+		[ -n "${WAYLAND_DISPLAY:-}" ] && return 0
+	done
+	return 1
+}
+
+# wl_output transforms turn the picture counter-clockwise: clockwise 90 = transform 270
+apply() { # angle
+	command -v wlr-randr >/dev/null || { echo "watch rotate: wlr-randr is missing (sudo apk add wlr-randr)" >&2; return 1; }
+	wayland_env || { echo "watch rotate: the screen session is not running" >&2; return 1; }
+	out=$(wlr-randr 2>/dev/null | awk 'NR == 1 { print $1 }')
+	[ -n "$out" ] || { echo "watch rotate: no output found" >&2; return 1; }
+	case "$1" in 90) tr=270 ;; 180) tr=180 ;; 270) tr=90 ;; *) tr=normal ;; esac
+	wlr-randr --output "$out" --transform "$tr"
+}
+
+case "${1:-}" in
+	"") echo "rotation: $cur degrees clockwise" ;;
+	--apply) apply "$cur" ;;
+	-h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+	*)
+		case "$1" in
+			cw) new=$(((cur + 90) % 360)) ;;
+			ccw) new=$(((cur + 270) % 360)) ;;
+			0|90|180|270) new=$1 ;;
+			*) echo "watch rotate: use 0, 90, 180, 270, cw or ccw" >&2; exit 1 ;;
+		esac
+		# saving needs root: watch-set writes the setting and the touch rule
+		if [ "$(id -u)" = 0 ]; then /usr/bin/watch-set ROTATE "$new" >/dev/null
+		elif sudo -n -l /usr/bin/watch-set >/dev/null 2>&1; then sudo -n /usr/bin/watch-set ROTATE "$new" >/dev/null
+		elif command -v doas >/dev/null; then doas /usr/bin/watch-set ROTATE "$new" >/dev/null
+		else sudo /usr/bin/watch-set ROTATE "$new" >/dev/null
+		fi || { echo "watch rotate: could not save the setting" >&2; exit 1; }
+		# old per-user value (0.21.0) would override the system one
+		[ -f "$HOME/.config/urbane/watch.conf" ] && sed -i '/^ROTATE=/d' "$HOME/.config/urbane/watch.conf"
+		echo "rotation: $new degrees clockwise - restarting the screen"
+		# the screen (cage) runs as the autologin user; the flag tells watch-session
+		# to start it again instead of ending the session
+		pid=$(pidof cage 2>/dev/null | cut -d' ' -f1)
+		if [ -n "$pid" ]; then
+			uid=$(stat -c %u "/proc/$pid")
+			if [ "$(id -u)" = "$uid" ] || [ "$(id -u)" = 0 ]; then
+				touch "/tmp/watch-restart-$uid"
+				[ "$(id -u)" = 0 ] && chown "$uid" "/tmp/watch-restart-$uid"
+				kill "$pid"
+			else
+				echo "(restart the screen to finish: Menu -> Power -> Restart screen)"
+			fi
+		fi ;;
+esac

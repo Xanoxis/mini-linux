@@ -1,0 +1,320 @@
+#!/bin/sh
+# watch cpu - CPU cores, clock, idle states and crash diagnostics for the watch.
+#
+#   watch cpu                 status: cores, MHz, idle states, temperatures, rails
+#   watch cpu cores N         use N cores (1-4)
+#   watch cpu maxfreq MHz     cap the clock (300 384 600 787)
+#   watch cpu idle wfi|all    wfi = only the shallow idle state (no power collapse)
+#   watch cpu test [SECONDS]  load every online core (default 60 s) while logging
+#   watch cpu log on|off      breadcrumb log: 1 line/s to /var/log/watch-cpu.log, synced
+#   watch cpu last            the last breadcrumbs before the previous crash/reboot
+#   watch cpu rails           every regulator the kernel knows: name, voltage, provider
+#   watch cpu rail            read-only: L2 SAW/SPM registers (CPU voltage controller)
+#   watch cpu pmic            read-only: PM8226 S1/S2 registers (type, range, voltage)
+#   watch cpu volt            CPU rail (S2) voltage now (needs the kit kernel, stage A2)
+#   watch cpu volt MV         set the CPU rail, 1150..1280 mV (resets to 1150 at boot)
+#   watch cpu governor G      powersave (stable here, 300 MHz) | performance | schedutil
+#   watch cpu apply           apply the CPU_* settings now (cores, governor, clock cap)
+#   watch cpu ramp            boot ramp: 2 cores, then the CPU_* settings (CPU_BOOT_RAMP)
+#   watch cpu klog            follow kernel messages live; from the PC keep a copy:
+#       ssh <user>@172.16.42.1 sudo -n watch cpu klog | tee klog.txt
+#
+# A hard crash resets the watch before anything reaches the disk, so the breadcrumb
+# log writes and syncs one line per second: after the reboot, "watch cpu last" shows
+# the cores, clocks, temperatures and load of the last seconds before the crash.
+set -u
+C=/sys/devices/system/cpu
+LOG=/var/log/watch-cpu.log
+PIDF=/run/watch-cpu-log.pid
+
+die() { echo "watch-cpu: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" = 0 ] || die "run with sudo"; }
+rd() { cat "$1" 2>/dev/null; }
+mhz() { v=$(rd "$1"); echo $(( ${v:-0} / 1000 )); }   # kHz file -> MHz (0 if missing)
+
+online_list() { rd $C/online; }
+
+temps() {
+	out=""
+	for z in /sys/class/thermal/thermal_zone*; do
+		[ -r "$z/temp" ] || continue
+		out="$out $(rd "$z/type" | cut -c1-10)=$(mhz "$z/temp")C"
+	done
+	b=$(ls -d /sys/class/power_supply/bq27* 2>/dev/null | head -n 1)
+	[ -n "$b" ] && { t=$(rd "$b/temp"); out="$out batt=$(( ${t:-0} / 10 ))C"; }
+	echo "${out# }"
+}
+
+freqs() {
+	out=""
+	for d in $C/cpu[0-9]; do
+		n=${d##*cpu}
+		if [ "$(rd "$d/online" || echo 1)" = 1 ]; then
+			out="$out $n:$(mhz "$d/cpufreq/scaling_cur_freq")"
+		else
+			out="$out $n:off"
+		fi
+	done
+	echo "${out# }"
+}
+
+status() {
+	echo "cores online: $(online_list)  (present $(rd $C/present))"
+	echo "MHz:          $(freqs)"
+	p=$C/cpu0/cpufreq
+	echo "governor:     $(rd $p/scaling_governor)  min $(mhz $p/scaling_min_freq) max $(mhz $p/scaling_max_freq)"
+	echo "available:    $(for f in $(rd $p/scaling_available_frequencies); do printf '%s ' $((f / 1000)); done)MHz"
+	echo "load:         $(cut -d' ' -f1-3 /proc/loadavg)"
+	echo "temps:        $(temps)"
+	echo "idle states (cpu0):"
+	for s in $C/cpu0/cpuidle/state*; do
+		[ -d "$s" ] || continue
+		printf '  %-8s %-6s used %-8s disabled=%s\n' "${s##*/}" "$(rd "$s/name")" "$(rd "$s/usage")" "$(rd "$s/disable")"
+	done
+	[ -d $C/cpu0/cpuidle ] || echo "  (no cpuidle - cores only use WFI)"
+	echo "regulators: watch-cpu rails"
+	[ -f $LOG ] && echo "breadcrumb log: $LOG ($(wc -l <$LOG) lines)$( [ -f $PIDF ] && echo ', recording')"
+}
+
+set_cores() {
+	need_root
+	n=${1:?number of cores 1-4}
+	i=1
+	while [ $i -lt 4 ]; do
+		f=$C/cpu$i/online
+		if [ -w "$f" ]; then
+			if [ $i -lt "$n" ]; then echo 1 >"$f" 2>/dev/null || echo "cpu$i failed to come online"
+			else echo 0 >"$f" 2>/dev/null; fi
+		fi
+		i=$((i + 1))
+	done
+	echo "cores online: $(online_list)"
+}
+
+set_maxfreq() {
+	need_root
+	m=${1:?MHz}
+	for p in $C/cpufreq/policy*; do
+		echo $((m * 1000)) >"$p/scaling_max_freq" 2>/dev/null || die "cannot set $p"
+	done
+	echo "max: $(mhz $C/cpu0/cpufreq/scaling_max_freq) MHz"
+}
+
+set_idle() {
+	need_root
+	case "${1:-}" in
+		wfi) v=1 ;; all) v=0 ;; *) die "idle wfi|all" ;;
+	esac
+	found=0
+	for s in $C/cpu*/cpuidle/state*; do
+		[ -d "$s" ] || continue
+		found=1
+		[ "${s##*state}" = 0 ] && continue   # state0 = WFI, always allowed
+		echo $v >"$s/disable" 2>/dev/null
+	done
+	[ $found = 1 ] || echo "no cpuidle states - nothing to change"
+	echo "idle: $1"
+}
+
+s2uv() {
+	for r in /sys/class/regulator/regulator.*; do
+		[ "$(rd "$r/name")" = s2 ] || continue
+		case "$(readlink "$r/device")" in *pm8226@1*) v=$(rd "$r/microvolts") && echo "s2=$((v / 1000))mV"; return ;; esac
+	done
+}
+
+crumb() {
+	echo "$(date +%T) on=$(online_list) mhz=[$(freqs)] load=$(cut -d' ' -f1 /proc/loadavg) $(temps) $(s2uv) $1"
+}
+
+log_on() {
+	need_root
+	[ -f $PIDF ] && kill -0 "$(cat $PIDF)" 2>/dev/null && { echo "already recording"; return; }
+	(
+		echo "=== log start $(date) kernel $(uname -r)"
+		last=""
+		while :; do
+			k=$(dmesg | tail -n 1 | cut -c1-120)
+			if [ "$k" != "$last" ]; then crumb "| $k"; last=$k; else crumb ""; fi
+			sync
+			sleep 1
+		done
+	) >>$LOG 2>&1 &
+	echo $! >$PIDF
+	echo "recording to $LOG (1 line/s). Stop: sudo watch-cpu log off"
+}
+
+log_off() {
+	need_root
+	[ -f $PIDF ] && kill "$(cat $PIDF)" 2>/dev/null
+	rm -f $PIDF
+	echo "stopped"
+}
+
+stress() { # seconds
+	need_root
+	t=${1:-60}
+	log_on
+	crumb "test start: $(online_list) for ${t}s" >>$LOG; sync
+	pids=""
+	for d in $C/cpu[0-9]; do
+		[ "$(rd "$d/online" || echo 1)" = 1 ] || continue
+		# a busy loop per online core (md5 of zeros keeps the core fully busy)
+		md5sum /dev/zero >/dev/null 2>&1 &
+		pids="$pids $!"
+	done
+	echo "loading cores $(online_list) for ${t}s ... (watch: $(freqs))"
+	sleep "$t"
+	kill $pids 2>/dev/null
+	crumb "test passed" >>$LOG; sync
+	echo "passed: no crash with cores $(online_list) at max $(mhz $C/cpu0/cpufreq/scaling_max_freq) MHz"
+}
+
+last() {
+	f=$LOG.prev
+	[ -f "$f" ] || f=$LOG
+	[ -f "$f" ] || die "no breadcrumb log yet (sudo watch-cpu log on, before testing)"
+	echo "-- last lines of $f:"
+	tail -n "${1:-25}" "$f"
+}
+
+case "${1:-}" in
+	"") status ;;
+	cores) set_cores "${2:-}" ;;
+	maxfreq) set_maxfreq "${2:-}" ;;
+	idle) set_idle "${2:-}" ;;
+	test) stress "${2:-60}" ;;
+	log) case "${2:-}" in on) log_on ;; off) log_off ;; *) die "log on|off" ;; esac ;;
+	last) last "${2:-25}" ;;
+	klog)
+		# busybox dmesg cannot follow (-w); /dev/kmsg prints the buffer, then waits for new lines
+		need_root
+		# (read through cat: /dev/kmsg needs a big read buffer per record, busybox awk's
+		#  small one made it stop at the first long line, e.g. the kernel command line)
+		cat /dev/kmsg | awk '/^ / { next }   # skip "KEY=value" continuation lines
+			{ i = index($0, ";"); split(substr($0, 1, i - 1), h, ",")
+			  printf "[%12.6f] %s\n", h[3] / 1000000, substr($0, i + 1); fflush() }' ;;
+	rail)
+		# READ-ONLY. Mainline has no CPU voltage control for msm8226: the CPU rail
+		# (PM8226 S2, VDD_APC) is driven by the L2 SAW/SPM block, which LG's bootloader
+		# programmed. Its registers tell which voltage level the SPM last sent.
+		need_root
+		[ -e /dev/mem ] || die "/dev/mem missing (kernel without CONFIG_DEVMEM)"
+		if command -v devmem2 >/dev/null; then
+			# devmem2 prints "Value at address 0x... (0x...): 0x1234"
+			dm() { devmem2 "$(printf '0x%x' "$1")" w 2>/dev/null | sed -n 's/.*): *\(0x[0-9A-Fa-f]*\).*/\1/p'; }
+		elif busybox --list 2>/dev/null | grep -qx devmem; then
+			dm() { busybox devmem "$1" 32 2>/dev/null; }
+		else
+			die "needs devmem2:  sudo apk add devmem2"
+		fi
+		base=0xf9012000   # saw_l2 (qcom,msm8226-saw2-v2.1-l2)
+		for r in 04:ID 08:CFG 0c:SPM_STS 14:PMIC_STS 1c:VCTL 20:AVS_CTL 24:AVS_LIMIT 30:SPM_CTL 40:PMIC_DATA0 44:PMIC_DATA1; do
+			o=${r%%:*}; n=${r#*:}
+			v=$(dm $((base + 0x$o)))
+			printf '  L2 SAW %-10s +0x%s = %s\n' "$n" "$o" "${v:-(unreadable)}"
+		done
+		vctl=$(dm $((base + 0x1c))); sts=$(dm $((base + 0x14)))
+		for x in "VCTL:$vctl" "PMIC_STS:$sts"; do
+			n=${x%%:*}; v=${x#*:}
+			[ -n "$v" ] || continue
+			lvl=$(( v & 0x7f ))
+			echo "  $n level $lvl -> ~$(( (375000 + lvl * 12500) / 1000 )) mV if HF-SMPS range 0 (estimate)"
+		done ;;
+	rails)
+		# pm8226 regulators appear twice: via RPM (rpm-requests) and via SPMI (pm8226@1).
+		# s2 is the CPU rail (VDD_APC); the SPMI one shows the real voltage.
+		for r in /sys/class/regulator/regulator.*; do
+			[ -e "$r/name" ] || continue
+			dev=$(readlink "$r/device" 2>/dev/null); dev=${dev##*/}
+			printf '%-10s %10s uV  %-9s %s\n' "$(rd "$r/name")" "$(rd "$r/microvolts" || echo -)" \
+				"$(rd "$r/state" || echo -)" "${dev:-?}"
+		done ;;
+	pmic)
+		# READ-ONLY raw registers of the PM8226 buck regulators (SPMI slave 1).
+		# The kernel cannot read s2's voltage ("Invalid argument"); this shows why.
+		# Reading this debugfs file walks the whole PMIC (a few seconds).
+		need_root
+		[ -d /sys/kernel/debug/regmap ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+		f=$(ls -d /sys/kernel/debug/regmap/*-01 2>/dev/null | head -n 1)/registers
+		[ -r "$f" ] || die "no regmap for PMIC slave 1 in /sys/kernel/debug/regmap"
+		echo "reading $f ..."
+		grep -iE '^(14|17|1a)(0[4-5]|4[0-6]|0[89]|1[0-9a-f]):' "$f" | awk '
+			{ a = toupper(substr($1, 1, 4)); v[a] = $2 }
+			function hex(h,   i, n) { n = 0; h = tolower(h)
+				for (i = 1; i <= length(h); i++) n = n * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+				return n }
+			END {
+				split("1400:S1 1700:S2 1A00:S3", rs, " ")
+				for (i = 1; i in rs; i++) {
+					split(rs[i], p, ":"); b = substr(p[1], 1, 2)
+					t = tolower(v[b "04"]); r = v[b "40"]; x = hex(v[b "41"]); mv = "?"
+					if (t == "1c") mv = (r == "00") ? x * 5 : x * 10                  # FTS buck
+					else if (t == "03") mv = (r == "00") ? 375 + x * 12.5 : 1550 + x * 25   # HF buck
+					printf "%s: TYPE=%s SUBTYPE=%s RANGE=%s VSET=%s MODE=%s EN=%s  = %s mV\n", p[2],
+						t, v[b "05"], r, v[b "41"], v[b "45"], v[b "46"], mv
+				}
+			}' ;;
+	volt)
+		d=/sys/bus/platform/devices/cpu-rail-control
+		s2=""
+		for r in /sys/class/regulator/regulator.*; do
+			[ "$(rd "$r/name")" = s2 ] && case "$(readlink "$r/device")" in *pm8226@1*) s2=$r ;; esac
+		done
+		if [ -z "${2:-}" ]; then
+			echo "CPU rail S2: $(rd "$s2/microvolts" || echo '?') uV"
+			[ -d $d ] || echo "(no cpu-rail-control: this kernel cannot change it - needs the kit kernel with stage A2)"
+			exit 0
+		fi
+		need_root
+		[ -d $d ] || die "no $d - boot the kit kernel with the cpu-rail-control node"
+		mv=$2
+		case "$mv" in *[!0-9]*|"") die "volt: millivolts, e.g. 1200" ;; esac
+		[ "$mv" -ge 1150 ] && [ "$mv" -le 1280 ] || die "volt: allowed 1150..1280 mV"
+		uv=$((mv * 1000))
+		cur=$(rd $d/max_microvolts); cur=${cur:-0}
+		# keep min <= max at every step
+		if [ "$uv" -ge "$cur" ]; then echo $uv >$d/max_microvolts; echo $uv >$d/min_microvolts
+		else echo $uv >$d/min_microvolts; echo $uv >$d/max_microvolts; fi
+		sleep 0.2
+		echo "CPU rail S2: $(rd "$s2/microvolts" || echo '?') uV"
+		crumb "volt set to $mv mV" >>$LOG 2>/dev/null ;;
+	governor)
+		need_root
+		for p in $C/cpufreq/policy*; do echo "${2:?schedutil|performance|powersave}" >"$p/scaling_governor"; done
+		echo "governor: $(rd $C/cpu0/cpufreq/scaling_governor)" ;;
+	rotate) # at boot (urbane-hw): keep the previous run's log for "watch-cpu last"
+		need_root; [ -f $LOG ] && mv -f $LOG $LOG.prev; rm -f $PIDF ;;
+	apply)
+		need_root
+		# shellcheck disable=SC1091
+		. /etc/urbane/watch.conf
+		[ -n "${CPU_GOVERNOR:-}" ] && "$0" governor "$CPU_GOVERNOR" >/dev/null
+		max=${CPU_MAX_MHZ:-}
+		[ -n "$max" ] || max=$(( $(tr ' ' '\n' <$C/cpu0/cpufreq/scaling_available_frequencies 2>/dev/null | sort -n | tail -n 1) / 1000 ))
+		[ "$max" -gt 0 ] 2>/dev/null && set_maxfreq "$max" >/dev/null
+		set_cores "${CPU_CORES:-1}"
+		# again for cores that came online with their own policy
+		[ -n "${CPU_GOVERNOR:-}" ] && "$0" governor "$CPU_GOVERNOR" >/dev/null
+		[ "$max" -gt 0 ] 2>/dev/null && set_maxfreq "$max" >/dev/null
+		crumb "applied: ${CPU_CORES:-1} cores, ${CPU_GOVERNOR:-default}, max ${max} MHz" >>$LOG 2>/dev/null ;;
+	ramp)
+		# started by urbane-hw at boot: the watch reset itself when it went to full
+		# speed right after plugging in, so it climbs in steps (seconds since power-on)
+		need_root
+		# shellcheck disable=SC1091
+		. /etc/urbane/watch.conf
+		set -- ${CPU_BOOT_RAMP:-60 90}
+		t1=${1:-60}; t2=${2:-$((t1 + 30))}
+		up() { cut -d. -f1 /proc/uptime; }
+		while [ "$(up)" -lt "$t1" ]; do sleep 2; done
+		"$0" governor powersave >/dev/null
+		set_cores 2 >/dev/null
+		"$0" governor powersave >/dev/null
+		crumb "boot ramp: 2 cores at $(up) s" >>$LOG 2>/dev/null
+		while [ "$(up)" -lt "$t2" ]; do sleep 2; done
+		"$0" apply >/dev/null
+		crumb "boot ramp: done at $(up) s" >>$LOG 2>/dev/null ;;
+	-h|--help) sed -n '2,25p' "$0" ;;
+	*) die "unknown: $1 (try --help)" ;;
+esac

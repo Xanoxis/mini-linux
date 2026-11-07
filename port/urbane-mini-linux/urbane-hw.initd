@@ -1,0 +1,55 @@
+#!/sbin/openrc-run
+# Hardware permissions and charger setup for the watch session.
+description="LG Watch Urbane: backlight access, input groups, charger limit"
+
+depend() {
+	need localmount
+	after udev
+}
+
+start() {
+	ebegin "Setting up watch hardware"
+	CPU_CORES=1
+	. /etc/urbane/watch.conf 2>/dev/null
+	# backlight writable for group video (screen on/off from the session)
+	for b in /sys/class/backlight/*; do
+		[ -e "$b" ] || continue
+		chgrp video "$b/brightness" "$b/bl_power" 2>/dev/null
+		chmod g+w "$b/brightness" "$b/bl_power" 2>/dev/null
+	done
+	# the session user (group wheel) needs input (side button, vibration) and video
+	for u in $(awk -F: '$1 == "wheel" {gsub(",", " ", $4); print $4}' /etc/group); do
+		for g in input video; do
+			id -nG "$u" 2>/dev/null | grep -qw "$g" || addgroup "$u" "$g" 2>/dev/null
+		done
+	done
+	# CPU (also re-run by "watch-set CPU_*"). The kernel starts with one core
+	# (maxcpus=1 from the G Watch R port); the others are brought up here.
+	booting=0
+	if [ ! -e /run/urbane-hw.booted ]; then
+		/usr/bin/watch-cpu rotate      # keep the last boot's breadcrumbs for "watch-cpu last"
+		touch /run/urbane-hw.booted
+		booting=1
+	fi
+	# a ramp still waiting from boot is replaced by what is applied now
+	start-stop-daemon --stop --quiet --pidfile /run/urbane-cpu-ramp.pid 2>/dev/null
+	rm -f /run/urbane-cpu-ramp.pid
+	[ -n "${CPU_IDLE:-}" ] && /usr/bin/watch-cpu idle "$CPU_IDLE" >/dev/null
+	[ -n "${CPU_VOLT_MV:-}" ] && /usr/bin/watch-cpu volt "$CPU_VOLT_MV" >/dev/null 2>&1
+	if [ $booting = 1 ] && [ -n "${CPU_BOOT_RAMP:-}" ]; then
+		# Boot: stay on 1 core at the lowest clock (urbane-cpusafe set it early), then
+		# step up in the background: 2 cores after the first time, the full
+		# settings after the second (seconds since power-on, CPU_BOOT_RAMP).
+		/usr/bin/watch-cpu governor powersave >/dev/null 2>&1
+		/usr/bin/watch-cpu cores 1 >/dev/null
+		start-stop-daemon --start --background --make-pidfile --pidfile /run/urbane-cpu-ramp.pid \
+			--exec /usr/bin/watch-cpu -- ramp
+	else
+		/usr/bin/watch-cpu apply >/dev/null
+	fi
+	if [ "${CPU_LOG:-0}" = 1 ]; then /usr/bin/watch-cpu log on >/dev/null
+	else /usr/bin/watch-cpu log off >/dev/null 2>&1; fi
+	# let the charger draw more than the 100 mA reset default
+	/usr/bin/watch-charge apply >/dev/null 2>&1 || ewarn "charger limit not set (watch-charge apply)"
+	eend 0
+}

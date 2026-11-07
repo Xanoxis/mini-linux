@@ -1,0 +1,112 @@
+# Author: Xanoxis (https://art.lucario.ink)
+# Mini Linux - a console-first Linux for the LG Watch Urbane (round 320x320 OLED),
+# built on Nura (postmarketOS) / Alpine Linux. Author: Xanoxis, https://art.lucario.ink
+pkgname=urbane-mini-linux
+pkgver=0.21.4
+pkgrel=2
+pkgdesc="Mini Linux for the LG Watch Urbane: round-screen session, watch command, menus and tools"
+url="https://art.lucario.ink"
+arch="all"
+license="MIT"
+depends="
+	agetty
+	bluez
+	bluez-btmgmt
+	iw
+	networkmanager
+	networkmanager-cli
+	networkmanager-tui
+	networkmanager-wifi
+	reboot-mode
+	wireless-regdb
+	brightnessctl
+	cage
+	font-dejavu
+	font-terminus
+	foot
+	devmem2
+	grim
+	wlr-randr
+	seatd
+	tmux
+	"
+makedepends="linux-headers"
+install="$pkgname.post-install $pkgname.post-upgrade"
+source="
+	bt-kbd
+	buttons.conf
+	foot.ini.in
+	frame.conf
+	logo.png
+	motd
+	tmux.conf
+	urbane-btaddr.initd
+	urbane-chargeguard.initd
+	urbane-cpusafe.initd
+	urbane-extract-nvram
+	urbane-firmware.initd
+	urbane-firstboot.initd
+	urbane-hw.initd
+	urbane-timesync.initd
+	urbane-zram.initd
+	urbane.doas
+	urbane.sudoers
+	watch
+	watch-bootlogo.c
+	watch-buttond.c
+	watch-buttons
+	watch-frame
+	watch-charge
+	watch-cpu
+	watch-info
+	watch-menu
+	watch-panel.c
+	watch-power
+	watch-rotate
+	watch-screen
+	watch-session
+	watch-set
+	watch-shot
+	watch-status
+	watch-viewport
+	watch.conf
+	wide
+	zz-watch-session.sh
+	"
+builddir="$srcdir"
+options="!check"
+
+build() {
+	${CC:-gcc} $CFLAGS -Wall -o watch-buttond watch-buttond.c $LDFLAGS
+	${CC:-gcc} $CFLAGS -Wall -o watch-panel watch-panel.c $LDFLAGS -lm
+	${CC:-gcc} $CFLAGS -Wall -o watch-bootlogo watch-bootlogo.c $LDFLAGS
+}
+
+package() {
+	install -Dm755 watch-buttond "$pkgdir"/usr/bin/watch-buttond
+	install -Dm755 watch-panel "$pkgdir"/usr/bin/watch-panel
+	install -Dm755 watch-bootlogo "$pkgdir"/usr/bin/watch-bootlogo
+	# "watch TOPIC ..." - the one command; anything else goes on to busybox watch
+	install -Dm755 "$srcdir"/watch "$pkgdir"/usr/bin/watch
+	for f in bt-kbd urbane-extract-nvram watch-buttons watch-charge watch-cpu watch-frame watch-info \
+		watch-menu watch-power watch-rotate watch-screen watch-session watch-set watch-shot watch-status watch-viewport wide; do
+		install -Dm755 "$srcdir/$f" "$pkgdir/usr/bin/$f"
+	done
+	for s in urbane-btaddr urbane-chargeguard urbane-cpusafe urbane-firmware urbane-firstboot urbane-hw \
+		urbane-timesync urbane-zram; do
+		install -Dm755 "$srcdir/$s.initd" "$pkgdir/etc/init.d/$s"
+	done
+	install -Dm644 "$srcdir"/watch.conf "$pkgdir"/etc/urbane/watch.conf
+	install -Dm644 "$srcdir"/buttons.conf "$pkgdir"/etc/urbane/buttons.conf
+	install -Dm644 "$srcdir"/tmux.conf "$pkgdir"/etc/urbane/tmux.conf
+	install -Dm644 "$srcdir"/frame.conf "$pkgdir"/etc/urbane/frame.conf
+	install -Dm644 "$srcdir"/foot.ini.in "$pkgdir"/usr/share/urbane/foot.ini.in
+	sed "s/@VERSION@/$pkgver/" "$srcdir"/motd >"$srcdir"/motd.out
+	install -Dm644 "$srcdir"/motd.out "$pkgdir"/usr/share/urbane/motd
+	install -Dm644 "$srcdir"/logo.png "$pkgdir"/usr/share/urbane/logo.png
+	echo "Mini Linux $pkgver" >"$srcdir"/release
+	install -Dm644 "$srcdir"/release "$pkgdir"/usr/share/urbane/release
+	install -Dm644 "$srcdir"/zz-watch-session.sh "$pkgdir"/etc/profile.d/zz-watch-session.sh
+	install -Dm440 "$srcdir"/urbane.sudoers "$pkgdir"/etc/sudoers.d/urbane
+	install -Dm400 "$srcdir"/urbane.doas "$pkgdir"/etc/doas.d/urbane.conf
+}

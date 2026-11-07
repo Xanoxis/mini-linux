@@ -1,0 +1,130 @@
+#!/bin/sh
+# watch - one command for the LG Watch Urbane tools.
+#
+#   watch help                  this overview          (also: watch -help, watch --help)
+#   watch help TOPIC            full help of one topic, e.g. watch help cpu
+#   watch TOPIC [ARGS...]       run it, e.g. watch set cpu_log 1, watch buttons idle 120
+#
+# Anything that is not a topic goes to the normal "watch" program, so
+# "watch -n 2 uptime" still repeats a command every 2 seconds.
+set -u
+
+# topic | tool | needs root to change things | one line
+TOPICS='set|watch-set|root|system settings, live (watch set KEY VALUE / watch set KEY)
+cpu|watch-cpu|root|CPU cores, clock, governor, idle, test, crash log
+charge|watch-charge|root|battery, charger, input current, temperature guard
+power|watch-power|root|reboot, poweroff, fastboot
+screen|watch-screen||screen on/off and brightness
+view|watch-viewport||screen layout (round / full / square), font, keymap
+rotate|watch-rotate||turn the picture by 0 / 90 / 180 / 270 degrees
+buttons|watch-buttons||side button actions, screen-off timeout
+menu|watch-menu||the pop-up menu on the watch screen
+shot|watch-shot||screenshot of the watch screen (PNG)
+status|watch-status||the short status text of the top bar
+info|watch-info||one screen of system status
+wide|wide||whole panel with a small font for one program (wide nmtui)
+kbd|bt-kbd||pair a Bluetooth keyboard'
+
+# old spellings still work
+alias_of() {
+	case "$1" in
+		viewport|layout) echo view ;;
+		button) echo buttons ;;
+		bt|keyboard) echo kbd ;;
+		screenshot) echo shot ;;
+		battery) echo charge ;;
+		*) echo "$1" ;;
+	esac
+}
+
+field() { printf '%s\n' "$TOPICS" | awk -F'|' -v t="$1" -v f="$2" '$1 == t { print $f }'; }
+
+# the comment block at the top of a tool (written in the "watch TOPIC" spelling)
+tool_help() {
+	f=$(command -v "$2") || { echo "watch: $2 is not installed" >&2; return 1; }
+	awk 'NR == 1 && /^#!/ { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$f"
+}
+
+overview() {
+	cat <<'EOF'
+watch - Mini Linux tools for the LG Watch Urbane
+
+  watch TOPIC [ARGS]     run a tool          watch help TOPIC   its full help
+  Settings are lowercase or uppercase:  watch set cpu_log 1  =  watch set CPU_LOG 1
+
+Topics:
+EOF
+	printf '%s\n' "$TOPICS" | awk -F'|' '{ printf "  %-8s %s\n", $1, $4 }'
+	cat <<'EOF'
+
+Examples:
+  watch set                    show all settings      watch set cpu_cores 4
+  watch set cpu_governor       back to the default    watch cpu
+  watch buttons idle 120       screen off after 120 s watch screen 40
+  watch view round | full      main / troubleshooting layout
+  watch rotate 90              turn the picture       watch rotate 0
+  watch shot                   screenshot to ~/shots  watch power reboot
+
+On the screen: tap the top bar or the bottom button = menu. Keys = Esc/Tab/arrows/Enter,
+abc = phone keypad for typing (tap a key again within 1 s for the next letter).
+Side button: 1x screen on/off, 2x menu, 3x touch buttons back, long press power menu.
+EOF
+	printf '\n%s - by Xanoxis, https://art.lucario.ink\n' "$(cat /usr/share/urbane/release 2>/dev/null || echo 'Mini Linux')"
+}
+
+all_help() {
+	overview
+	printf '%s\n' "$TOPICS" | while IFS='|' read -r t tool _ _; do
+		command -v "$tool" >/dev/null || continue
+		printf '\n==================== watch %s\n' "$t"
+		tool_help "$t" "$tool"
+	done
+}
+
+[ $# -gt 0 ] || { overview; exit 0; }
+
+case "$1" in
+	help|-help|--help|-h|-\?)
+		shift
+		if [ $# -eq 0 ]; then overview
+		elif [ "$1" = all ]; then all_help
+		else
+			t=$(alias_of "$1"); tool=$(field "$t" 2)
+			[ -n "$tool" ] || { echo "watch: no topic '$1' (watch help lists them)" >&2; exit 1; }
+			tool_help "$t" "$tool"
+		fi
+		exit $? ;;
+esac
+
+t=$(alias_of "$1")
+tool=$(field "$t" 2)
+if [ -z "$tool" ]; then
+	# not ours: the classic watch(1)
+	for w in /usr/bin/watch /bin/watch; do
+		[ -x "$w" ] && [ "$w" != "$0" ] && exec "$w" "$@"
+	done
+	command -v busybox >/dev/null && exec busybox watch "$@"
+	echo "watch: no topic '$1' (watch help lists them)" >&2
+	exit 1
+fi
+shift
+
+# watch set: keys may be written in lowercase
+if [ "$t" = set ] && [ $# -gt 0 ]; then
+	k=$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'); shift
+	set -- "$k" "$@"
+fi
+# TOPIC help / -h
+case "${1:-}" in help|-h|--help) tool_help "$t" "$tool"; exit $? ;; esac
+
+if [ "$(field "$t" 3)" = root ] && [ "$(id -u)" != 0 ]; then
+	# read-only calls work without root too; changes need it (sudoers: no password)
+	[ $# -eq 0 ] && exec "$tool"            # status only
+	if command -v sudo >/dev/null; then
+		sudo -n -l "/usr/bin/$tool" >/dev/null 2>&1 && exec sudo -n "/usr/bin/$tool" "$@"
+		exec sudo "/usr/bin/$tool" "$@"
+	fi
+	command -v doas >/dev/null && exec doas "/usr/bin/$tool" "$@"
+	exec "$tool" "$@"
+fi
+exec "$tool" "$@"

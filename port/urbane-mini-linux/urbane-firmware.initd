@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+# The Urbane uses the same Broadcom BCM43430 WiFi/BT combo chip as the G Watch R.
+# brcmfmac looks for board-specific files named after the DT compatible
+# ("lg,bass"), so expose the lenok files (or your own extracted NVRAM) under
+# that name. Reloads brcmfmac once if WiFi failed to come up because of it.
+
+description="Provide WiFi/BT firmware names for the LG Watch Urbane"
+
+depend() {
+	need localmount
+	before networkmanager bluetooth
+}
+
+start() {
+	ebegin "Linking WiFi/BT firmware for lg,bass"
+	changed=0
+	custom=/etc/urbane/firmware/brcmfmac43430a0-sdio.lg,bass.txt
+	for f in $(find /lib/firmware -name 'brcmfmac43430a0-sdio.lg,lenok.*' 2>/dev/null); do
+		dir=$(dirname "$f")
+		base=$(basename "$f" | sed 's/lenok/bass/')
+		src=$(basename "$f")
+		if [ "${base##*.}" = txt ] && [ -f "$custom" ]; then
+			src=$custom
+		fi
+		if [ "$(readlink "$dir/$base" 2>/dev/null)" != "$src" ]; then
+			ln -sfn "$src" "$dir/$base"
+			changed=1
+		fi
+	done
+	if [ "$changed" = 1 ] && ! ls -d /sys/class/net/wlan* >/dev/null 2>&1; then
+		modprobe -r brcmfmac 2>/dev/null
+		modprobe brcmfmac 2>/dev/null
+	fi
+	eend 0
+}

@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+# Keep the clock right (TLS, Minecraft logins and logs need it). The watch has
+# no network time otherwise. busybox ntpd keeps retrying until WiFi is up.
+description="Network time (busybox ntpd)"
+supervisor=supervise-daemon
+command=/bin/busybox
+command_args="ntpd -n -p pool.ntp.org -p time.cloudflare.com"
+
+depend() {
+	need localmount
+	use net
+	after networkmanager
+}

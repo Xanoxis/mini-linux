@@ -1,0 +1,59 @@
+#!/bin/sh
+# Same as post-install: make sure services stay enabled after upgrades.
+rc-update -q add seatd default 2>/dev/null
+rc-update -q add bluetooth default 2>/dev/null
+rc-update -q add urbane-btaddr default 2>/dev/null
+rc-update -q add networkmanager default 2>/dev/null
+rc-update -q add urbane-firmware boot 2>/dev/null
+rc-update -q add urbane-zram boot 2>/dev/null
+rc-update -q add urbane-hw default 2>/dev/null
+rc-update -q add urbane-cpusafe boot 2>/dev/null
+rc-update -q add urbane-chargeguard default 2>/dev/null
+rc-update -q add urbane-timesync default 2>/dev/null
+
+# 0.20: user settings moved to /etc/urbane/watch.local.conf. If watch.conf was edited
+# by hand, apk left the new one as watch.conf.apk-new: keep the user's changed values
+# in watch.local.conf and install the new defaults.
+c=/etc/urbane/watch.conf
+if [ -f $c.apk-new ]; then
+	touch /etc/urbane/watch.local.conf
+	awk -F= '
+		NR == FNR { if ($0 ~ /^[A-Z_]+=/) new[$1] = substr($0, length($1) + 2); next }
+		/^[A-Z_]+=/ { old[$1] = substr($0, length($1) + 2) }
+		END { for (k in old) if (!(k in new) || new[k] != old[k]) print k "=" old[k] }' \
+		$c.apk-new $c | grep -v '^VIEWPORT=' >>/etc/urbane/watch.local.conf
+	mv -f $c.apk-new $c
+fi
+
+# 0.21: Minecraft is no longer part of the system. The server binary that the kit
+# copied by hand goes; worlds in ~/minecraft stay (delete them yourself if unwanted).
+rm -f /usr/local/bin/pumpkin
+rm -f /etc/nftables.d/60_urbane.nft
+[ -f /etc/urbane/watch.local.conf ] && sed -i '/^MC_/d' /etc/urbane/watch.local.conf
+
+# 0.21.1: "watch rotate" turns touch with a calibration matrix (watch-set writes
+# /etc/udev/rules.d/62-urbane-rotate.rules); the 0.21.0 output-name rule is gone
+command -v udevadm >/dev/null && udevadm trigger --subsystem-match=input --action=change 2>/dev/null
+for f in /home/*/.config/urbane/watch.conf; do
+	[ -f "$f" ] && sed -i '/^ROTATE=/d' "$f"     # 0.21.0 kept it per user
+done
+
+# 0.21.2: side button x3 = touch buttons back (works in wide nmtui too)
+for f in /home/*/.config/urbane/buttons.conf; do
+	[ -f "$f" ] && sed -i -e 's/^triple=watch-viewport --cycle$/triple=watch-viewport nav/' \
+		-e 's/^triple=wide --toggle$/triple=watch-viewport nav/' "$f"
+done
+
+# the SSH welcome text
+# (replaced on every update while it is ours, so the version stays right)
+if [ -f /usr/share/urbane/motd ] && { [ ! -s /etc/motd ] || grep -qE '^Welcome to (Mini Linux|Nura)' /etc/motd; }; then
+	cp /usr/share/urbane/motd /etc/motd
+fi
+
+# live upgrade on the watch: apply the hardware setup right away
+if [ -d /run/openrc ]; then
+	rc-service -q urbane-hw restart 2>/dev/null
+	rc-service -q urbane-chargeguard restart 2>/dev/null
+	rc-service -q urbane-timesync restart 2>/dev/null
+fi
+exit 0

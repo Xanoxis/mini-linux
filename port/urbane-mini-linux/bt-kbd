@@ -1,0 +1,150 @@
+#!/bin/sh
+# watch kbd - pair a Bluetooth keyboard with as little typing as possible.
+#
+#   watch kbd                 scan, list devices (keyboards first), pick one
+#   watch kbd --auto          pair the first keyboard found in pairing mode
+#   watch kbd --first-run     like --auto, shown on the watch the first time
+#   watch kbd --list          show paired devices
+#   watch kbd --forget MAC    remove a pairing
+#   watch kbd --has-keyboard  exit 0 if a keyboard is already paired (for scripts)
+#
+# The keyboard is trusted, so it reconnects by itself when switched on.
+set -u
+SCAN_SECONDS=${SCAN_SECONDS:-15}
+
+bt() { bluetoothctl "$@" 2>/dev/null; }
+
+is_keyboard() { bt info "$1" | grep -q "Icon: input-keyboard"; }
+
+paired_keyboards() {
+	{ bt devices Paired || bt paired-devices; } | awk '/^Device/ {print $2}' | sort -u |
+		while read -r mac; do is_keyboard "$mac" && echo "$mac"; done
+}
+
+clean() { tr -d '\033' | sed 's/\[[0-9;]*m//g'; }
+
+big() { # print a code large enough to read on the watch
+	printf '\n\n      >>>  %s  <<<\n\n' "$1"
+}
+
+power_on() {
+	if command -v rfkill >/dev/null; then rfkill unblock bluetooth 2>/dev/null; fi
+	i=0
+	until bt show | grep -q "Powered: yes"; do
+		bt power on >/dev/null
+		i=$((i + 1))
+		[ $i -ge 10 ] && { echo "Bluetooth adapter does not power on (see README: Bluetooth)."; return 1; }
+		sleep 1
+	done
+}
+
+scan() {
+	echo "Scanning ${SCAN_SECONDS}s - put the keyboard in pairing mode now..."
+	{ echo "scan on"; sleep "$SCAN_SECONDS"; echo "scan off"; sleep 1; echo "quit"; } |
+		bluetoothctl >/dev/null 2>&1
+}
+
+pair() { # MAC
+	mac=$1
+	echo "Pairing $mac ..."
+	echo "If a code appears, TYPE IT ON THE KEYBOARD and press Enter."
+	{
+		echo "agent KeyboardDisplay"
+		echo "default-agent"
+		echo "pair $mac"
+		i=0
+		while [ $i -lt 60 ]; do
+			sleep 1
+			i=$((i + 1))
+			bt info "$mac" | grep -q "Paired: yes" && break
+		done
+		echo "trust $mac"
+		echo "connect $mac"
+		sleep 4
+		echo "quit"
+	} | bluetoothctl 2>&1 | while IFS= read -r line; do
+		case "$line" in
+			*Passkey:*|*passkey*|*"PIN code"*)
+				code=$(echo "$line" | clean | grep -o '[0-9]\{4,6\}' | tail -n 1)
+				[ -n "$code" ] && big "$code" ;;
+			*"Pairing successful"*) echo "Paired." ;;
+			*"Connection successful"*) echo "Connected." ;;
+			*Failed*|*failed*|*Error*) echo "$line" | clean ;;
+		esac
+	done
+	if bt info "$mac" | grep -q "Paired: yes"; then
+		echo "Done - the keyboard will reconnect automatically from now on."
+		return 0
+	fi
+	echo "Pairing did not complete. Try again: bt-kbd"
+	return 1
+}
+
+choose() {
+	bt devices | awk '/^Device/ {mac=$2; $1=$2=""; sub(/^ +/, ""); print mac "\t" $0}' >/tmp/bt-kbd.$$
+	: >/tmp/bt-kbd.sorted.$$
+	while IFS="$(printf '\t')" read -r mac name; do
+		if is_keyboard "$mac"; then printf '0\t%s\t%s (keyboard)\n' "$mac" "$name"
+		else printf '1\t%s\t%s\n' "$mac" "$name"; fi
+	done </tmp/bt-kbd.$$ | sort | cut -f2- >/tmp/bt-kbd.sorted.$$
+	rm -f /tmp/bt-kbd.$$
+	if [ ! -s /tmp/bt-kbd.sorted.$$ ]; then
+		rm -f /tmp/bt-kbd.sorted.$$
+		echo "Nothing found."
+		return 1
+	fi
+	awk -F '\t' '{printf "%2d) %s\n", NR, $2}' /tmp/bt-kbd.sorted.$$
+	printf "Number (Enter = 1): "
+	read -r n
+	n=${n:-1}
+	sel=$(awk -F '\t' -v n="$n" 'NR == n {print $1}' /tmp/bt-kbd.sorted.$$)
+	rm -f /tmp/bt-kbd.sorted.$$
+	[ -n "$sel" ] || { echo "Invalid choice."; return 1; }
+	pair "$sel"
+}
+
+auto() {
+	scan
+	for mac in $(bt devices | awk '/^Device/ {print $2}'); do
+		if is_keyboard "$mac"; then
+			echo "Found keyboard: $(bt info "$mac" | sed -n 's/^[[:space:]]*Name: //p')"
+			pair "$mac"
+			return $?
+		fi
+	done
+	echo "No keyboard in pairing mode found."
+	return 1
+}
+
+case "${1:-}" in
+	--has-keyboard)
+		[ -n "$(paired_keyboards)" ]; exit $? ;;
+	--list)
+		{ bt devices Paired || bt paired-devices; }; exit 0 ;;
+	--forget)
+		bt remove "${2:?MAC address}"; exit $? ;;
+	--auto)
+		power_on && auto; exit $? ;;
+	--first-run)
+		clear
+		echo "No keyboard paired yet."
+		echo "Switch a BT keyboard to pairing mode."
+		echo "(Skip: press Ctrl-C or wait.)"
+		echo
+		power_on || exit 0
+		tries=0
+		while [ $tries -lt 4 ]; do
+			auto && exit 0
+			tries=$((tries + 1))
+		done
+		echo "Giving up for now. Pair later with: bt-kbd"
+		exit 0 ;;
+	-h|--help)
+		sed -n '2,11p' "$0"; exit 0 ;;
+	"")
+		power_on || exit 1
+		scan
+		choose; exit $? ;;
+	*)
+		echo "unknown option: $1 (try --help)" >&2; exit 1 ;;
+esac

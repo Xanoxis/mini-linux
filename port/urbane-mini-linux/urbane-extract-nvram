@@ -1,0 +1,29 @@
+#!/bin/sh
+# urbane-extract-nvram - copy the Urbane's own WiFi calibration (NVRAM) from the
+# untouched Android Wear "system" partition, so WiFi uses the exact values LG
+# shipped instead of the G Watch R file. Run as root (doas urbane-extract-nvram).
+set -eu
+[ "$(id -u)" = 0 ] || exec doas "$0" "$@"
+
+dest=/etc/urbane/firmware/brcmfmac43430a0-sdio.lg,bass.txt
+mnt=$(mktemp -d)
+
+part=""
+for name in system system_a; do
+	[ -e "/dev/disk/by-partlabel/$name" ] && { part="/dev/disk/by-partlabel/$name"; break; }
+done
+[ -n "$part" ] || part=$(blkid -t PARTLABEL=system -o device 2>/dev/null | head -n 1 || true)
+[ -n "$part" ] || { echo "Android system partition not found." >&2; exit 1; }
+
+echo "Mounting $part read-only..."
+mount -o ro,noload "$part" "$mnt"
+trap 'umount "$mnt" 2>/dev/null; rmdir "$mnt"' EXIT
+
+found=$(find "$mnt" \( -iname 'bcmdhd*.cal' -o -iname 'nvram*.txt' -o -iname 'brcmfmac43430*.txt' \) 2>/dev/null | head -n 1)
+[ -n "$found" ] || { echo "No WiFi NVRAM file found on $part." >&2; exit 1; }
+
+mkdir -p "$(dirname "$dest")"
+cp "$found" "$dest"
+echo "Copied $found -> $dest"
+rc-service urbane-firmware restart
+echo "Reboot (or: modprobe -r brcmfmac; modprobe brcmfmac) to use it."

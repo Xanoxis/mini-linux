@@ -1,0 +1,152 @@
+#!/bin/sh
+# watch menu - pop-up menu on the watch screen (tmux menu; arrows/Enter, letter keys or touch).
+#
+#   watch menu [main|display|system|cpu|buttons|power]
+#   watch menu do ACTION  run one menu action directly (see "do" below)
+#
+# Opened by: side button double press, F1, tapping the top status line, Ctrl-b m.
+set -u
+SELF=watch-menu
+
+asroot() {
+	if [ "$(id -u)" = 0 ]; then "$@"
+	elif command -v doas >/dev/null; then doas -n "$@"
+	else sudo -n "$@"; fi
+}
+
+in_window() { # name command...  - run an interactive command in its own tmux window
+	n=$1; shift
+	tmux new-window -n "$n" "$*; printf '\n[Enter] close'; read -r _"
+}
+
+act() {
+	case "$1" in
+		off) watch-screen off ;;
+		vp) watch-viewport "$2" ;;
+		font+) watch-viewport + ;;
+		font-) watch-viewport - ;;
+		wide) wide --toggle ;;
+		bright) watch-screen "$2" ;;
+		wifi) tmux new-window -n wifi "wide nmtui" ;;
+		bt) in_window bt bt-kbd ;;
+		btlist) in_window bt bt-kbd --list ;;
+		info) in_window info watch-info ;;
+		top) tmux new-window -n top top ;;
+		shell) tmux new-window ;;
+		btn) shift; watch-buttons "$@" && tmux display-message "buttons: $*" ;;
+		cpu) shift
+			if asroot /usr/bin/watch-set "$@" >/dev/null 2>&1; then tmux display-message "set $*"
+			else in_window cpu "sudo /usr/bin/watch-set $*"; fi ;;
+		cpuinfo) in_window cpu "watch-cpu; echo; watch-set | grep '^CPU_'" ;;
+		help) in_window help "watch help all" ;;
+		rot) watch-rotate "$2" >/dev/null 2>&1 && tmux display-message "rotation: $2" ;;
+		restart)
+			touch "/tmp/watch-restart-$(id -u)"; pkill -x cage ;;
+		reboot|poweroff|fastboot)
+			if ! asroot /usr/bin/watch-power "$1" 2>/dev/null; then
+				in_window "$1" "sudo /usr/bin/watch-power $1"
+			fi ;;
+		*) echo "unknown action: $*" >&2; return 1 ;;
+	esac
+}
+
+if [ "${1:-}" = "do" ]; then
+	shift
+	act "$@"
+	exit $?
+fi
+
+# The newest attached client is the watch screen (or the SSH session that used it last).
+c=$(tmux list-clients -F '#{client_activity} #{client_name}' 2>/dev/null | sort -rn | awk 'NR == 1 {print $2}')
+[ -n "$c" ] || { echo "$SELF: no tmux client - is the watch session running?" >&2; exit 1; }
+
+r() { printf 'run-shell -b "%s do %s"' "$SELF" "$*"; }
+sub() { printf 'run-shell -b "%s %s"' "$SELF" "$1"; }
+menu() { t=$1; shift; tmux display-menu -c "$c" -x C -y C -T "#[align=centre]$t" "$@"; }
+
+
+# Menus stay short (at most 7 lines): with the Keys page open the middle of a
+# big font is only ~9 rows high, and tmux does not show a menu that does not fit.
+case "${1:-main}" in
+	main)
+		menu "Watch" \
+			"Screen off" o "$(r off)" \
+			"Display..." d "$(sub display)" \
+			"WiFi" w "$(r wifi)" \
+			"BT keyboard" k "$(r bt)" \
+			"System..." s "$(sub system)" \
+			"Power..." p "$(sub power)" \
+			"Help" h "$(r help)" ;;
+	display)
+		menu "Display" \
+			"Round (main)" r "$(r vp round)" \
+			"Full (debug)" f "$(r vp full)" \
+			"Wide on/off" w "$(r wide)" \
+			"Rotate 90° cw" t "$(r rot cw)" \
+			"Rotate to 0°" 0 "$(r rot 0)" \
+			"Font..." n "$(sub font)" \
+			"Brightness..." b "$(sub bright)" ;;
+	font)
+		menu "Font" \
+			"Bigger" + "$(r font+)" \
+			"Smaller" - "$(r font-)" ;;
+	bright)
+		menu "Brightness" \
+			"100%" 1 "$(r bright 100)" \
+			"50%" 5 "$(r bright 50)" \
+			"15%" 2 "$(r bright 15)" ;;
+	system)
+		menu "System" \
+			"System info" i "$(r info)" \
+			"CPU..." c "$(sub cpu)" \
+			"Side button..." b "$(sub buttons)" \
+			"New shell" n "$(r shell)" ;;
+	buttons)
+		menu "Side button" \
+			"Default" d "$(r btn preset default)" \
+			"Menu first" m "$(r btn preset menu-first)" \
+			"Minimal" n "$(r btn preset minimal)" \
+			"Screen timeout..." t "$(sub idle)" \
+			"Edit file" e "new-window -n buttons 'watch-buttons edit'" ;;
+	idle)
+		menu "Screen timeout" \
+			"30 s" 3 "$(r btn idle 30)" \
+			"60 s" 6 "$(r btn idle 60)" \
+			"5 min" 5 "$(r btn idle 300)" \
+			"Never" 0 "$(r btn idle 0)" ;;
+	cpu)
+		menu "CPU" \
+			"Status" i "$(r cpuinfo)" \
+			"Cores..." c "$(sub cores)" \
+			"Speed..." s "$(sub speed)" ;;
+	cores)
+		menu "CPU cores" \
+			"1 core" 1 "$(r cpu CPU_CORES 1)" \
+			"2 cores" 2 "$(r cpu CPU_CORES 2)" \
+			"3 cores" 3 "$(r cpu CPU_CORES 3)" \
+			"4 cores" 4 "$(r cpu CPU_CORES 4)" ;;
+	speed)
+		menu "CPU speed" \
+			"Powersave 300 MHz" p "$(r cpu CPU_GOVERNOR powersave)" \
+			"Performance" f "$(r cpu CPU_GOVERNOR performance)" \
+			"Max 600 MHz" 6 "$(r cpu CPU_MAX_MHZ 600)" \
+			"Max 787 MHz" 7 "$(r cpu CPU_MAX_MHZ 787)" ;;
+	power)
+		menu "Power" \
+			"Restart screen" s "$(r restart)" \
+			"Reboot" r "$(r reboot)" \
+			"Fastboot" f "$(r fastboot)" \
+			"Power off" o "$(r poweroff)" ;;
+	--title)
+		# reopen a menu by its title (the frame does this after it resized the screen,
+		# which closes tmux menus)
+		case "${2:-}" in
+			Watch) n=main ;; Display) n=display ;; Font) n=font ;; Brightness) n=bright ;;
+			System) n=system ;; "Side button") n=buttons ;; "Screen timeout") n=idle ;;
+			CPU) n=cpu ;; "CPU cores") n=cores ;; "CPU speed") n=speed ;; Power) n=power ;;
+			*) exit 0 ;;
+		esac
+		exec "$0" "$n" ;;
+	-h|--help) sed -n '2,8p' "$0" ;;
+	*) echo "unknown menu: $1" >&2; exit 1 ;;
+esac

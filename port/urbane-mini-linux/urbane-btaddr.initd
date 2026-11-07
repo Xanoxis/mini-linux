@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+# The Urbane's BCM4343 has no programmed Bluetooth address. Linux then keeps the
+# controller "unconfigured" and bluetoothd ignores it ("No default controller").
+# Give it a stable address derived from the watch's serial number.
+
+description="Set a stable Bluetooth address for the LG Watch Urbane"
+
+depend() {
+	need bluetooth
+}
+
+start() {
+	ebegin "Setting Bluetooth address"
+	i=0
+	while [ ! -e /sys/class/bluetooth/hci0 ] && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done
+	if [ ! -e /sys/class/bluetooth/hci0 ]; then
+		eend 1 "no hci0"
+		return 1
+	fi
+	serial=$(sed -n 's/.*androidboot.serialno=\([^ ]*\).*/\1/p' /proc/cmdline)
+	[ -n "$serial" ] || serial=$(cat /etc/machine-id 2>/dev/null)
+	h=$(printf '%s-bt' "$serial" | md5sum | cut -c1-10)
+	# 22:xx:xx:xx:xx:xx - fixed first byte, the rest from the hash of the serial
+	addr=$(printf '22:%s:%s:%s:%s:%s' $(echo "$h" | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)/\1 \2 \3 \4 \5/'))
+	btmgmt --index 0 public-addr "$addr" >/dev/null 2>&1
+	sleep 1
+	btmgmt --index 0 power on >/dev/null 2>&1
+	eend 0 "$addr"
+}

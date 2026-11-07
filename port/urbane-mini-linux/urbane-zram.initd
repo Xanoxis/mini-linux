@@ -1,0 +1,32 @@
+#!/sbin/openrc-run
+# Compressed swap in RAM. The Urbane has 512 MB; zram roughly doubles usable memory
+# for terminal workloads without wearing out the eMMC.
+
+description="zram swap"
+
+depend() {
+	need localmount
+}
+
+start() {
+	. /etc/urbane/watch.conf 2>/dev/null
+	ebegin "Enabling zram swap (${ZRAM_SIZE:-256M})"
+	modprobe zram num_devices=1 2>/dev/null
+	if [ ! -e /sys/block/zram0 ]; then
+		eend 1 "zram not available in this kernel"
+		return 1
+	fi
+	echo zstd >/sys/block/zram0/comp_algorithm 2>/dev/null ||
+		echo lz4 >/sys/block/zram0/comp_algorithm 2>/dev/null
+	echo "${ZRAM_SIZE:-256M}" >/sys/block/zram0/disksize &&
+		mkswap /dev/zram0 >/dev/null &&
+		swapon -p 100 /dev/zram0
+	eend $?
+}
+
+stop() {
+	ebegin "Disabling zram swap"
+	swapoff /dev/zram0 2>/dev/null
+	echo 1 >/sys/block/zram0/reset 2>/dev/null
+	eend 0
+}

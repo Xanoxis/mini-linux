@@ -1,0 +1,110 @@
+#!/bin/sh
+# watch-frame - what the watch screen shows (started by watch-session inside foot).
+#
+#   VIEWPORT=round   the round "frame": the terminal sits in the square in the
+#                    middle; around it, in the parts of the circle a square leaves
+#                    free: top = time/battery/WiFi/BT + network speed,
+#                    left = RAM/swap/disk, right = CPU cores, bottom = buttons
+#                    (menu, previous/next window, window numbers, Ctrl-C).
+#   anything else    plain terminal on the whole layout (full = troubleshooting).
+#
+# The middle is the normal "watch" tmux session (shell, logs, servers, ...);
+# the frame is a second, outer tmux ("tmux -L frame") that only holds the panels.
+# Sizes can be tuned without rebuilding: FRAME_SIDE, FRAME_TOP, FRAME_NAV in
+# ~/.config/urbane/watch.conf (columns / rows; empty = automatic).
+set -u
+. /etc/urbane/watch.conf
+[ -f "$HOME/.config/urbane/watch.conf" ] && . "$HOME/.config/urbane/watch.conf"
+
+INNER="env -u TMUX tmux -f /etc/urbane/tmux.conf"
+FRAME="tmux -L frame -f /etc/urbane/frame.conf"
+
+# ---------------------------------------------------------------- round frame
+# Sizes follow the terminal: on a font change (Ctrl +/-) foot resizes, tmux runs the
+# client-resized hook and "watch-frame --layout" fits the panels again.
+# The square inscribed in the circle is ~72 % of the width and of the height.
+sizes() {   # $1 rows, $2 cols -> side top nav
+	_ic=$(($2 * 72 / 100))
+	_ir=$(($1 * 72 / 100))
+	side=${FRAME_SIDE:-$((($2 - _ic - 2) / 2))}
+	top=${FRAME_TOP:-$((($1 - _ir + 1) / 2))}
+	nav=${FRAME_NAV:-$(($1 - _ir - top))}
+	[ "$side" -lt 3 ] && side=3
+	[ "$top" -lt 3 ] && top=3     # 3 status lines: status, net, disk + uptime
+	[ "$top" -gt 5 ] && top=5
+	[ "$nav" -lt 2 ] && nav=2
+	[ "$nav" -gt 4 ] && nav=4
+}
+
+layout() {
+	sz=$($FRAME list-clients -F '#{client_height} #{client_width}' 2>/dev/null | head -n 1)
+	[ -n "$sz" ] || return 0
+	sizes ${sz% *} ${sz#* }
+	# keys / pad pages of the bottom panel need more rows
+	case "$($FRAME show -gv @navmode 2>/dev/null)" in
+		keys) nav=$((nav + 4)) ;;      # Esc Tab Pg / arrows: 3 button rows
+		pad) nav=$((nav + 7)) ;;       # phone keypad: 5 button rows
+	esac
+	$FRAME set -g status "$top" \; \
+		resize-pane -t "$($FRAME show -gv @left)" -x "$side" \; \
+		resize-pane -t "$($FRAME show -gv @right)" -x "$side" \; \
+		resize-pane -t "$($FRAME show -gv @nav)" -y "$nav" 2>/dev/null
+}
+
+if [ "${1:-}" = --layout ]; then
+	layout
+	exit 0
+fi
+
+# --page main|keys|pad: switch the bottom panel's page. Its height changes, so the
+# middle is resized - and tmux closes an open menu on a resize. The menu on the screen
+# (its title in the top border) is opened again after the resize.
+if [ "${1:-}" = --page ]; then
+	c=$($FRAME show -gv @center 2>/dev/null)
+	title=$($FRAME capture-pane -p -t "$c" 2>/dev/null |
+		sed -n 's/.*┌─*\([A-Z][A-Za-z ]*[a-z]\)─.*/\1/p' | head -n 1)
+	$FRAME set -g @navmode "${2:-main}"
+	layout
+	if [ -n "$title" ]; then
+		sleep 0.3
+		env -u TMUX watch-menu --title "$title" >/dev/null 2>&1
+	fi
+	exit 0
+fi
+
+# the inner session always exists (it survives screen restarts)
+if ! env -u TMUX tmux has-session -t watch 2>/dev/null; then
+	$INNER new-session -d -s watch "${WATCH_FIRST_CMD:-exec ${SHELL:-/bin/sh} -l}"
+fi
+
+# saved picture rotation (wlr-randr needs the compositor up: try a few times)
+if [ "${ROTATE:-0}" != 0 ]; then
+	( for _ in 1 2 3 4 5; do watch-rotate --apply >/dev/null 2>&1 && break; sleep 1; done ) &
+fi
+
+if [ "${VIEWPORT:-round}" != round ]; then
+	env -u TMUX tmux set -g status on >/dev/null 2>&1
+	watch-viewport --status-only >/dev/null 2>&1
+	$FRAME kill-server 2>/dev/null
+	exec $INNER attach -t watch
+fi
+
+size=$(stty size 2>/dev/null)
+rows=${size% *}
+cols=${size#* }
+case "$rows$cols" in *[!0-9]*|"") rows=20 cols=39 ;; esac
+sizes "$rows" "$cols"
+
+env -u TMUX tmux set -g status off >/dev/null 2>&1          # the frame shows status + windows
+$FRAME kill-server 2>/dev/null
+center=$($FRAME new-session -d -s frame -x "$cols" -y "$((rows - top))" -P -F '#{pane_id}' \
+	"while :; do env -u TMUX tmux attach -t watch || sleep 1; done")
+left=$($FRAME split-window -d -hb -l "$side" -t "$center" -P -F '#{pane_id}' "watch-panel mem")
+right=$($FRAME split-window -d -h -l "$side" -t "$center" -P -F '#{pane_id}' "watch-panel cpu")
+navp=$($FRAME split-window -d -v -l "$nav" -t "$center" -P -F '#{pane_id}' "watch-panel nav")
+$FRAME set -g status "$top" \; set -g @center "$center" \; set -g @left "$left" \; \
+	set -g @right "$right" \; set -g @nav "$navp" \; \
+	set-hook -g client-resized "run-shell -b 'watch-frame --layout'" \; \
+	set-hook -g client-attached "run-shell -b 'watch-frame --layout'" \; \
+	select-pane -t "$center"
+exec $FRAME attach -t frame

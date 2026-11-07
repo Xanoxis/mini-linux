@@ -1,0 +1,50 @@
+#!/bin/sh
+# watch wide - use the whole panel with a small font, e.g. for nmtui, htop or vim.
+#
+#   watch wide nmtui     run a program wide, then return to the previous layout
+#   watch wide --toggle  switch wide on / off (menu, F5)
+#   watch wide           switch wide on (back: wide --toggle, or watch view round)
+#   WIDE_FONT_PX=8 wide vim
+conf="$HOME/.config/urbane/watch.conf"
+mkdir -p "$(dirname "$conf")"; touch "$conf"
+. /etc/urbane/watch.conf
+. "$conf"
+
+setkey() { # key value
+	if grep -q "^$1=" "$conf"; then sed -i "s|^$1=.*|$1=\"$2\"|" "$conf"; else printf '%s="%s"\n' "$1" "$2" >>"$conf"; fi
+}
+apply() {
+	watch-viewport --apply-only
+	if [ -n "${WAYLAND_DISPLAY:-}" ] || pgrep -x cage >/dev/null; then
+		touch "/tmp/watch-restart-$(id -u)"; pkill -x cage
+	fi
+	sleep 2
+}
+go_wide() {
+	if [ "$VIEWPORT" != full ] || [ -z "${WIDE_PREV_VP:-}" ]; then
+		setkey WIDE_PREV_VP "$VIEWPORT"
+		setkey WIDE_PREV_PX "$FONT_PX"
+	fi
+	setkey VIEWPORT full
+	setkey FONT_PX "${WIDE_FONT_PX:-9}"
+	apply
+}
+go_back() {
+	setkey VIEWPORT "${WIDE_PREV_VP:-round}"
+	setkey FONT_PX "${WIDE_PREV_PX:-13}"
+	setkey WIDE_PREV_VP ""
+	apply
+}
+
+case "${1:-}" in
+	--toggle)
+		if [ "$VIEWPORT" = full ] && [ -n "${WIDE_PREV_VP:-}" ]; then go_back; else go_wide; fi ;;
+	"") go_wide; echo "Wide mode on. Back: wide --toggle" ;;
+	*)
+		was_wide=0
+		[ "$VIEWPORT" = full ] && [ -n "${WIDE_PREV_VP:-}" ] && was_wide=1
+		[ $was_wide = 1 ] || go_wide
+		"$@"; rc=$?
+		[ $was_wide = 1 ] || go_back
+		exit $rc ;;
+esac

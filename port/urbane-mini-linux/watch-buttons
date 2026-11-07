@@ -1,0 +1,46 @@
+#!/bin/sh
+# watch buttons - show or change what the side button does (applies live).
+#
+#   watch buttons           show the current mapping
+#   watch buttons set double "wide nmtui"
+#   watch buttons idle 120  screen off after 120 s idle (0 = never)
+#   watch buttons preset default|menu-first|minimal
+#   watch buttons edit      open the file in an editor
+set -eu
+conf="$HOME/.config/urbane/buttons.conf"
+mkdir -p "$(dirname "$conf")"
+[ -f "$conf" ] || cp /etc/urbane/buttons.conf "$conf"
+
+setkey() { # key value
+	if grep -q "^$1=" "$conf"; then
+		v=$(printf '%s' "$2" | sed 's/[|&\\]/\\&/g')
+		sed -i "s|^$1=.*|$1=$v|" "$conf"
+	else
+		printf '%s=%s\n' "$1" "$2" >>"$conf"
+	fi
+}
+get() { sed -n "s/^$1=//p" "$conf" | tail -n 1; }
+
+case "${1:-}" in
+	"")
+		for k in single double triple long; do printf '%-7s %s\n' "$k" "$(get $k)"; done
+		echo "idle    $(get IDLE_OFF) s" ;;
+	set)
+		case "${2:-}" in single|double|triple|long) ;; *) echo "set single|double|triple|long CMD" >&2; exit 1 ;; esac
+		setkey "$2" "${3:-@none}" ;;
+	idle) setkey IDLE_OFF "${2:?seconds}" ;;
+	haptic) setkey HAPTIC "${2:?1 or 0}" ;;
+	preset)
+		case "${2:-}" in
+			default) setkey single @screen-toggle; setkey double watch-menu
+				setkey triple "watch-viewport nav"; setkey long "watch-menu power" ;;
+			menu-first) setkey single watch-menu; setkey double @screen-toggle
+				setkey triple "watch-viewport nav"; setkey long "watch-menu power" ;;
+			minimal) setkey single @screen-toggle; setkey double @none
+				setkey triple @none; setkey long "watch-menu power" ;;
+			*) echo "presets: default menu-first minimal" >&2; exit 1 ;;
+		esac ;;
+	edit) exec "${EDITOR:-vi}" "$conf" ;;
+	-h|--help) sed -n '2,8p' "$0" ;;
+	*) echo "unknown: $1 (try --help)" >&2; exit 1 ;;
+esac

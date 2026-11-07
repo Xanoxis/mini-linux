@@ -1,0 +1,66 @@
+#!/bin/sh
+# watch-session - full-screen terminal for the round 320x320 display.
+# cage (single-app Wayland kiosk) -> foot (terminal, centred safe-area padding)
+# -> tmux (persistent session; survives viewport changes and screen restarts).
+set -u
+
+conf() {
+	# shellcheck disable=SC1091
+	. /etc/urbane/watch.conf
+	# shellcheck disable=SC1090
+	[ -f "$HOME/.config/urbane/watch.conf" ] && . "$HOME/.config/urbane/watch.conf"
+}
+conf
+
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+	XDG_RUNTIME_DIR="/tmp/$(id -u)-runtime"
+	mkdir -p "$XDG_RUNTIME_DIR"
+	chmod 0700 "$XDG_RUNTIME_DIR"
+	export XDG_RUNTIME_DIR
+fi
+export LIBSEAT_BACKEND=seatd
+export WLR_RENDERER="${WLR_RENDERER:-$RENDERER}"
+export XKB_DEFAULT_LAYOUT="$KEYMAP"
+[ -n "${KEYMAP_VARIANT:-}" ] && export XKB_DEFAULT_VARIANT="$KEYMAP_VARIANT"
+
+first_cmd="exec ${SHELL:-/bin/sh} -l"
+if [ "${AUTO_PAIR_KEYBOARD:-1}" = 1 ] && ! bt-kbd --has-keyboard; then
+	first_cmd="bt-kbd --first-run; $first_cmd"
+fi
+
+# Hide the mouse pointer: touch input makes cage draw one in the middle of the
+# screen. A 1x1 transparent cursor theme named "default" in our own XCURSOR_PATH.
+if [ "${HIDE_POINTER:-1}" = 1 ]; then
+	cur="$HOME/.local/share/watch-cursor/default/cursors"
+	if [ ! -s "$cur/default" ]; then
+		mkdir -p "$cur"
+		printf 'Xcur\020\000\000\000\000\000\001\000\001\000\000\000\002\000\375\377\001\000\000\000\034\000\000\000\044\000\000\000\002\000\375\377\001\000\000\000\001\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' >"$cur/default"
+		for n in left_ptr arrow top_left_arrow pointer hand2 text xterm; do ln -sf default "$cur/$n"; done
+	fi
+	export XCURSOR_PATH="$HOME/.local/share/watch-cursor" XCURSOR_THEME=default
+fi
+
+# side button, screen blanking and haptics (restarted if it ever exits)
+if command -v watch-buttond >/dev/null; then
+	pkill -u "$(id -u)" -x watch-buttond 2>/dev/null
+	( while :; do watch-buttond; sleep 2; done ) >"$HOME/.cache/watch-buttond.log" 2>&1 &
+	buttond_loop=$!
+	trap 'kill $buttond_loop 2>/dev/null; pkill -u "$(id -u)" -x watch-buttond' EXIT INT TERM
+fi
+
+# fixed path, so a restart can also be asked for over SSH (other XDG_RUNTIME_DIR)
+restart_flag="/tmp/watch-restart-$(id -u)"
+while :; do
+	rm -f "$restart_flag"
+	watch-viewport --apply-only >/dev/null
+	WATCH_FIRST_CMD=$first_cmd cage -s -- foot -- watch-frame
+	rc=$?
+	# watch-viewport asks for a restart to apply a new font/padding;
+	# the tmux session keeps running in the meantime.
+	if [ -e "$restart_flag" ]; then
+		conf
+		export XKB_DEFAULT_LAYOUT="$KEYMAP"
+		continue
+	fi
+	exit $rc
+done

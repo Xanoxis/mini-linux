@@ -1,0 +1,112 @@
+#!/bin/sh
+# watch charge - battery / charger status and the USB input current limit.
+#
+#   watch charge            show status (any user)
+#   watch charge input 500  allow the charger to draw 500 mA from USB (root)
+#   watch charge apply      set CHARGE_INPUT_MA from /etc/urbane/watch.conf (root, boot)
+#   watch charge --raw      every charger / battery value the kernel exposes (w = writable)
+#   watch charge --log [s]  one line every s seconds (default 10): time % mV mA C status
+#
+# Charger knobs on the Urbane (qcom_smbb):
+#   smbb-usbin/charge_control_limit  USB input limit        (500 mA by default)
+#   smbb-bif/current_max             battery charge current (400 mA; LG used 410)
+#   smbb-bif/voltage_max             full-charge voltage    (4.35 V)
+# Near full the charger tops off with a few mA and pauses ("Not charging")
+# until the voltage drops a little - that cycling is normal.
+#
+#   watch charge guard      (service urbane-chargeguard) cut the charge current to
+#                             CHARGE_HOT_MA while the battery is >= CHARGE_HOT_C
+set -u
+usb=/sys/class/power_supply/smbb-usbin
+bif=/sys/class/power_supply/smbb-bif
+fg=$(ls -d /sys/class/power_supply/bq27* 2>/dev/null | head -n 1)
+
+rd() { [ -r "$1" ] && cat "$1" 2>/dev/null; }
+ma() { v=$(rd "$1"); [ -n "$v" ] && echo "$((v / 1000)) mA"; }
+mvolt() { v=$(rd "$1"); [ -n "$v" ] && echo "$((v / 1000)) mV"; }
+
+show() {
+	if [ -n "$fg" ]; then
+		echo "Battery  $(rd $fg/capacity)%  $(rd $fg/status)"
+		echo "  voltage $(mvolt $fg/voltage_now)"
+		echo "  current $(ma $fg/current_now)  (+ = charging)"
+		t=$(rd $fg/temp); [ -n "$t" ] && echo "  temp    $((t / 10)).$((t % 10)) C"
+		echo "  health  $(rd $fg/health)"
+	fi
+	echo "Charger  online=$(rd $usb/online) health=$(rd $bif/health)"
+	for f in charge_control_limit input_current_limit; do
+		[ -e "$usb/$f" ] && echo "  usb $f: $(ma $usb/$f)"
+	done
+	for f in current_max voltage_max constant_charge_current constant_charge_voltage; do
+		[ -e "$bif/$f" ] || continue
+		case $f in *current*) echo "  $f: $(ma $bif/$f)" ;; *) echo "  $f: $(mvolt $bif/$f)" ;; esac
+	done
+}
+
+set_input() { # mA
+	m=$1
+	[ "$m" -ge 100 ] && [ "$m" -le 1500 ] || { echo "limit must be 100..1500 mA" >&2; return 1; }
+	f=$usb/charge_control_limit
+	[ -e "$f" ] || f=$usb/input_current_limit
+	[ -e "$f" ] || { echo "no writable input limit in $usb" >&2; return 1; }
+	echo $((m * 1000)) >"$f" || return 1
+	echo "USB input limit: $(ma "$f")"
+}
+
+guard() {
+	# Li-ion should not be charged above ~45 C. The PMIC's own temperature
+	# comparator is disabled on this watch (it misreads), so watch the fuel gauge.
+	CHARGE_MA=400 CHARGE_HOT_MA=200 CHARGE_HOT_C=45 CHARGE_COOL_C=42
+	. /etc/urbane/watch.conf 2>/dev/null
+	f=$bif/current_max
+	[ -w "$f" ] && [ -n "$fg" ] || { echo "guard: $f or fuel gauge missing" >&2; return 1; }
+	# the charger accepts 200..3000 mA here
+	[ "$CHARGE_HOT_MA" -lt 200 ] && CHARGE_HOT_MA=200
+	hot=0
+	while :; do
+		t=$(( $(rd $fg/temp) / 10 ))
+		if [ $hot = 0 ] && [ "$t" -ge "$CHARGE_HOT_C" ]; then
+			hot=1; echo $((CHARGE_HOT_MA * 1000)) >"$f"
+			logger -t watch-charge "battery ${t}C: charge current ${CHARGE_HOT_MA} mA" 2>/dev/null
+		elif [ $hot = 1 ] && [ "$t" -le "$CHARGE_COOL_C" ]; then
+			hot=0; echo $((CHARGE_MA * 1000)) >"$f"
+			logger -t watch-charge "battery ${t}C: charge current ${CHARGE_MA} mA" 2>/dev/null
+		fi
+		sleep 30
+	done
+}
+
+raw() {
+	for d in /sys/class/power_supply/*; do
+		echo "== ${d##*/}"
+		for f in "$d"/*; do
+			[ -f "$f" ] || continue
+			n=${f##*/}; [ "$n" = uevent ] && continue
+			w=" "; [ -w "$f" ] || [ "$(stat -c %A "$f" 2>/dev/null | cut -c3)" = w ] && w=w
+			printf ' %s %-34s %s\n' "$w" "$n" "$(cat "$f" 2>/dev/null | head -n 1)"
+		done
+	done
+}
+
+logloop() {
+	while :; do
+		printf '%s %s%% %smV %smA %sC %s usb=%s\n' "$(date +%H:%M:%S)" "$(rd $fg/capacity)" \
+			"$(($(rd $fg/voltage_now) / 1000))" "$(($(rd $fg/current_now) / 1000))" \
+			"$(($(rd $fg/temp) / 10))" "$(rd $fg/status)" "$(rd $usb/online)"
+		sleep "${1:-10}"
+	done
+}
+
+case "${1:-}" in
+	"") show ;;
+	--raw) raw ;;
+	guard) guard ;;
+	--log) logloop "${2:-10}" ;;
+	input) set_input "${2:?mA}" ;;
+	apply)
+		CHARGE_INPUT_MA=500
+		. /etc/urbane/watch.conf 2>/dev/null
+		[ "${CHARGE_INPUT_MA:-0}" -gt 0 ] && set_input "$CHARGE_INPUT_MA" ;;
+	-h|--help) sed -n '2,10p' "$0" ;;
+	*) echo "unknown: $1 (try --help)" >&2; exit 1 ;;
+esac

@@ -1,0 +1,35 @@
+#!/bin/sh
+# watch shot - screenshot of the watch screen (PNG, 320x320, includes the corners
+# the round glass hides).
+#
+#   watch shot       save to ~/shots/shot-YYYYmmdd-HHMMSS.png, print the path
+#   watch shot FILE  save to FILE
+#   watch shot -     PNG to stdout (ssh ... watch shot - > shot.png on Linux/WSL)
+#
+# Works from SSH too: it takes the Wayland socket from the running screen session.
+set -u
+pid=$(pidof cage 2>/dev/null | cut -d' ' -f1)
+[ -n "$pid" ] || { echo "watch-shot: the screen session (cage) is not running" >&2; exit 1; }
+if [ -z "${WAYLAND_DISPLAY:-}" ] || [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+	eval "$(tr '\0' '\n' <"/proc/$pid/environ" | grep -E '^(XDG_RUNTIME_DIR|WAYLAND_DISPLAY)=' | sed 's/^/export /')"
+fi
+: "${XDG_RUNTIME_DIR:=/tmp/$(id -u)-runtime}"
+export XDG_RUNTIME_DIR
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+	for s in "$XDG_RUNTIME_DIR"/wayland-[0-9]*; do
+		case "$s" in *.lock) continue ;; esac
+		[ -S "$s" ] && { WAYLAND_DISPLAY=${s##*/}; break; }
+	done
+fi
+export WAYLAND_DISPLAY
+command -v grim >/dev/null || { echo "watch-shot: grim is missing (sudo apk add grim)" >&2; exit 1; }
+
+out=${1:-}
+if [ -z "$out" ]; then
+	mkdir -p "$HOME/shots"
+	out="$HOME/shots/shot-$(date +%Y%m%d-%H%M%S).png"
+fi
+if [ "$out" = - ]; then
+	exec grim -
+fi
+grim "$out" && echo "$out"

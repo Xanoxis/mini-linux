@@ -1,0 +1,77 @@
+#!/bin/sh
+# watch set - system settings of the watch, changed live (no rebuild, no flashing).
+#
+#   watch set            show the effective settings (package defaults + yours)
+#   watch set KEY VALUE  change one, e.g.:  watch set cpu_cores 3 (any case)
+#   watch set KEY        back to the package default
+#
+# Your changes go to /etc/urbane/watch.local.conf (package updates never touch it).
+# CPU_* and CHARGE_* apply immediately; display settings (VIEWPORT, FONT_PX, ...) are
+# per user: use watch view, or ~/.config/urbane/watch.conf.
+set -eu
+LOCAL=/etc/urbane/watch.local.conf
+
+case "${1:-}" in
+	"")
+		# shellcheck disable=SC1091
+		( . /etc/urbane/watch.conf; set ) 2>/dev/null |
+			grep -E '^(CPU_|CHARGE_|IDLE|ZRAM_|RENDERER|AUTOSTART|AUTO_PAIR|HIDE_POINTER|KEYMAP|VIEWPORT|FRAME_|FONT|ROTATE)' | tr -d "'"
+		[ -s $LOCAL ] && { echo; echo "changed in $LOCAL:"; sed 's/^/  /' $LOCAL; }
+		exit 0 ;;
+	-h|--help|help) sed -n '2,10p' "$0"; exit 0 ;;
+esac
+
+key=$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+case "$key" in *[!A-Z0-9_]*) echo "watch-set: bad key: $key" >&2; exit 1 ;; esac
+grep -q "^$key=" /etc/urbane/watch.conf ||
+	{ echo "watch-set: unknown setting $key (see: watch set)" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "watch-set: needs root - use: watch set KEY VALUE" >&2; exit 1; }
+
+if [ "$key" = ROTATE ] && [ $# -ge 2 ]; then
+	case "$2" in 0|90|180|270) ;; *) echo "watch-set: ROTATE is 0, 90, 180 or 270" >&2; exit 1 ;; esac
+fi
+
+touch $LOCAL
+sed -i "/^$key=/d" $LOCAL
+if [ $# -ge 2 ]; then
+	val=$2
+	case "$val" in *[\"\`\$\\]*) echo "watch-set: value must not contain quotes, \$, \` or \\" >&2; exit 1 ;; esac
+	printf '%s="%s"\n' "$key" "$val" >>$LOCAL
+	echo "$key=$val"
+else
+	echo "$key back to default"
+fi
+
+case "$key" in
+	ROTATE)
+		# touch follows the picture: libinput calibration matrix for the touchscreen
+		# (picture turned clockwise; libinput reads it when the screen starts)
+		# shellcheck disable=SC1091
+		r=$(. /etc/urbane/watch.conf; echo "${ROTATE:-0}")
+		rule=/etc/udev/rules.d/62-urbane-rotate.rules
+		case "$r" in
+			90)  m="0 1 0 -1 0 1" ;;
+			180) m="-1 0 1 0 -1 1" ;;
+			270) m="0 -1 1 1 0 0" ;;
+			*)   m="" ;;
+		esac
+		if [ -n "$m" ]; then
+			mkdir -p /etc/udev/rules.d
+			printf '%s\n%s\n' "# written by watch-set ROTATE=$r" \
+				"ACTION==\"add|change\", SUBSYSTEM==\"input\", ENV{ID_INPUT_TOUCHSCREEN}==\"1\", ENV{LIBINPUT_CALIBRATION_MATRIX}=\"$m\"" >"$rule"
+		else
+			rm -f "$rule"
+		fi
+		if command -v udevadm >/dev/null; then
+			udevadm control --reload-rules 2>/dev/null || true
+			udevadm trigger --subsystem-match=input --action=change 2>/dev/null || true
+		fi
+		echo "touch turned too (watch rotate restarts the screen to use it)"
+		# the bootloader's Mini Linux logo turns with the screen (from the next start)
+		command -v watch-bootlogo >/dev/null && watch-bootlogo apply || true ;;
+	CPU_*)    rc-service urbane-hw restart >/dev/null 2>&1 && echo "applied (CPU)" ;;
+	CHARGE_*) rc-service urbane-hw restart >/dev/null 2>&1
+	          rc-service urbane-chargeguard restart >/dev/null 2>&1 && echo "applied (charger)" ;;
+	ZRAM_*)   echo "applies after a reboot" ;;
+	*)        echo "applies the next time the watch session starts (menu: Power > Restart screen)" ;;
+esac

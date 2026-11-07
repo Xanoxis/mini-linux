@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# Earliest CPU setting of the boot: the lowest clock on the one core the kernel
+# starts (maxcpus=1). urbane-hw later steps up (CPU_BOOT_RAMP) to the CPU_* settings.
+description="LG Watch Urbane: safe CPU clock during boot"
+
+depend() {
+	after modules udev-trigger
+	before urbane-hw
+}
+
+start() {
+	ebegin "Safe CPU clock for the boot"
+	# the cpufreq driver may still be probing: wait up to 5 s for it
+	n=0
+	while [ ! -e /sys/devices/system/cpu/cpufreq/policy0 ] && [ $n -lt 25 ]; do
+		sleep 0.2; n=$((n + 1))
+	done
+	for p in /sys/devices/system/cpu/cpufreq/policy*; do
+		echo powersave >"$p/scaling_governor" 2>/dev/null
+	done
+	eend 0
+}

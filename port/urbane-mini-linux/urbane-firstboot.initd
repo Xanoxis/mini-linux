@@ -1,0 +1,66 @@
+#!/sbin/openrc-run
+# One-time setup on the first boot of the watch:
+#  - autologin on tty1 (the watch screen) for the main user
+#  - group memberships needed by the Wayland seat, input and Bluetooth
+#  - Bluetooth: power on automatically, keep reconnecting trusted keyboards
+# Removes itself from the runlevel when done.
+
+description="LG Watch Urbane first-boot setup"
+
+depend() {
+	need localmount
+	after bootmisc
+}
+
+main_user() {
+	u=$(getent passwd 10000 | cut -d: -f1)
+	[ -n "$u" ] || u=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd)
+	echo "$u"
+}
+
+set_conf() { # file section key value
+	f=$1 sec=$2 key=$3 val=$4
+	[ -f "$f" ] || return 0
+	if grep -q "^#\?[[:space:]]*$key[[:space:]]*=" "$f"; then
+		sed -i "s|^#\?[[:space:]]*$key[[:space:]]*=.*|$key = $val|" "$f"
+	elif grep -q "^\[$sec\]" "$f"; then
+		sed -i "/^\[$sec\]/a $key = $val" "$f"
+	else
+		printf '\n[%s]\n%s = %s\n' "$sec" "$key" "$val" >>"$f"
+	fi
+}
+
+start() {
+	ebegin "Urbane first-boot setup"
+	u=$(main_user)
+	if [ -z "$u" ]; then
+		eend 1 "no regular user found"
+		return 1
+	fi
+
+	for g in seat video input audio bluetooth netdev plugdev; do
+		getent group "$g" >/dev/null && addgroup "$u" "$g" 2>/dev/null
+	done
+
+	# autologin on tty1 (busybox init / inittab)
+	if [ -f /etc/inittab ] && grep -q '^tty1:' /etc/inittab; then
+		sed -i "s|^tty1:.*|tty1::respawn:/sbin/agetty --autologin $u --noclear 38400 tty1 linux|" /etc/inittab
+		kill -HUP 1 2>/dev/null
+	fi
+	# autologin on tty1 (OpenRC agetty services)
+	if [ -e /etc/init.d/agetty ] && [ ! -f /etc/inittab -o -e /etc/init.d/agetty.tty1 ]; then
+		[ -e /etc/init.d/agetty.tty1 ] || ln -s agetty /etc/init.d/agetty.tty1
+		echo "agetty_options=\"--autologin $u --noclear\"" >/etc/conf.d/agetty.tty1
+		rc-update -q add agetty.tty1 default 2>/dev/null
+	fi
+
+	set_conf /etc/bluetooth/main.conf Policy AutoEnable true
+	set_conf /etc/bluetooth/main.conf Policy ReconnectAttempts 7
+	set_conf /etc/bluetooth/main.conf Policy ReconnectIntervals "1,2,4,8,16,32,64"
+	set_conf /etc/bluetooth/input.conf General UserspaceHID true
+
+	mkdir -p /var/lib/urbane
+	touch /var/lib/urbane/firstboot.done
+	rc-update -q del urbane-firstboot default 2>/dev/null
+	eend 0
+}

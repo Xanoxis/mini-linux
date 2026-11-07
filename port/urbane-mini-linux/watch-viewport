@@ -1,0 +1,136 @@
+#!/bin/sh
+# watch view - choose how much of the round screen the terminal uses.
+#
+#   watch view                show current settings and grid size
+#   watch view round          MAIN: terminal in the inscribed square, info panels
+#                             and buttons around it
+#   watch view full           TROUBLESHOOTING: whole panel, plain terminal
+#   watch view square         plain terminal in the inscribed square (no panels)
+#   watch view balanced       plain terminal, 264x264
+#   watch view --cycle        round <-> full
+#   watch view nav            bring up the touch buttons: leaves wide/full for the round
+#                             frame; in the frame, opens/closes the Keys page (side button x3)
+#   watch view + | -          font one pixel bigger / smaller
+#   watch view font NAME [PX] e.g. "Terminus 12" (sharp bitmap: 12, 14, 16) or "DejaVu Sans Mono"
+#   watch view size PX        font size in pixels (also Ctrl +/- on a keyboard, not kept)
+#   watch view keymap pl      keyboard layout for BT keyboards
+#   watch view --apply-only   regenerate foot.ini, do not restart
+#   watch view --status-only  place the tmux status line for the current layout
+set -eu
+
+SCREEN=320
+userconf="$HOME/.config/urbane/watch.conf"
+
+load() {
+	# shellcheck disable=SC1091
+	. /etc/urbane/watch.conf
+	# shellcheck disable=SC1090
+	[ -f "$userconf" ] && . "$userconf"
+	return 0
+}
+
+set_user() { # key value
+	mkdir -p "$(dirname "$userconf")"
+	touch "$userconf"
+	if grep -q "^$1=" "$userconf"; then
+		sed -i "s|^$1=.*|$1=\"$2\"|" "$userconf"
+	else
+		printf '%s="%s"\n' "$1" "$2" >>"$userconf"
+	fi
+}
+
+pad_for() {
+	case "$1" in
+		round) echo 4 ;;      # frame: tmux lays out panels + square itself
+		square) echo 47 ;;    # 320/2 - 160/sqrt(2) -> inscribed square
+		balanced) echo 28 ;;
+		full) echo 4 ;;
+		*) echo 4 ;;
+	esac
+}
+
+render() {
+	pad=$(pad_for "$VIEWPORT")
+	mkdir -p "$HOME/.config/foot"
+	sed -e "s|@FONT@|$FONT|" -e "s|@FONT_PX@|$FONT_PX|" -e "s|@PAD@|$pad|g" \
+		/usr/share/urbane/foot.ini.in >"$HOME/.config/foot/foot.ini"
+}
+
+show() {
+	pad=$(pad_for "$VIEWPORT")
+	area=$((SCREEN - 2 * pad))
+	# monospace cells are roughly 0.6 x 1.17 of the pixel size
+	cols=$((area * 10 / (FONT_PX * 6)))
+	rows=$((area * 100 / (FONT_PX * 117)))
+	# short lines on purpose: long ones wrap, and tmux re-flows wrapped lines
+	# into garbage when the terminal is resized by the restart
+	[ "$VIEWPORT" = round ] && area=226
+	echo "$VIEWPORT ${area}px"
+	echo "${FONT_PX}px ~${cols}x${rows} $KEYMAP"
+}
+
+status_bar() {
+	# In "full" the top text row is only ~120 px wide (round glass), so the
+	# status line moves one row down: row 0 stays empty.
+	command -v tmux >/dev/null && tmux has-session 2>/dev/null || return 0
+	fmt=$(tmux show -gv @watch-status-format 2>/dev/null)
+	[ -n "$fmt" ] || return 0
+	if [ "$VIEWPORT" = round ]; then
+		tmux set -g status off      # the frame shows status + window numbers
+	elif [ "$VIEWPORT" = full ]; then
+		tmux set -g status 2 \; set -g 'status-format[0]' '' \; set -g 'status-format[1]' "$fmt"
+	else
+		tmux set -g status on \; set -g 'status-format[0]' "$fmt"
+	fi
+}
+
+restart() {
+	if pgrep -x -u "$(id -u)" cage >/dev/null 2>&1; then
+		touch "/tmp/watch-restart-$(id -u)"
+		# Restart the whole kiosk: this cage version does not exit when foot dies.
+		# tmux keeps the session; watch-session sees the flag and relaunches cage + foot.
+		pkill -x cage || true
+	else
+		echo "(applies the next time watch-session starts)"
+	fi
+}
+
+load
+case "${1:-}" in
+	"") show; exit 0 ;;
+	--apply-only) render; status_bar; exit 0 ;;
+	--status-only) status_bar; exit 0 ;;
+	round|square|balanced|full) set_user VIEWPORT "$1" ;;
+	nav)
+		if [ "$VIEWPORT" = full ] && [ -n "${WIDE_PREV_VP:-}" ]; then
+			exec wide --toggle             # back from wide (nmtui etc. keep running)
+		elif [ "$VIEWPORT" != round ]; then
+			set_user VIEWPORT round
+		else
+			# already in the frame: toggle the Keys page of the bottom panel
+			F="tmux -L frame"
+			case "$($F show -gv @navmode 2>/dev/null)" in main|"") m=keys ;; *) m=main ;; esac
+			$F has-session 2>/dev/null || exit 0
+			$F respawn-pane -k -t "$($F show -gv @nav)" "env WATCH_NAV_PAGE=$m watch-panel nav"
+			env -u TMUX watch-frame --page $m
+			exit 0
+		fi ;;
+	--cycle)
+		case "$VIEWPORT" in
+			round) set_user VIEWPORT full ;;
+			*) set_user VIEWPORT round ;;
+		esac ;;
+	+) [ "$FONT_PX" -lt 32 ] && set_user FONT_PX $((FONT_PX + 1)) ;;
+	-) [ "$FONT_PX" -gt 7 ] && set_user FONT_PX $((FONT_PX - 1)) ;;
+	font) set_user FONT "${2:?font name}"
+		case "${3:-}" in [0-9]|[0-9][0-9]) set_user FONT_PX "$3" ;; esac ;;
+	size) case "${2:-}" in [0-9]|[0-9][0-9]) set_user FONT_PX "$2" ;; *) echo "size in pixels, e.g. 12" >&2; exit 1 ;; esac ;;
+	keymap) set_user KEYMAP "${2:?layout, e.g. pl}" ;;
+	-h|--help) sed -n "2,20p" "$0"; exit 0 ;;
+	*) echo "unknown option: $1 (try --help)" >&2; exit 1 ;;
+esac
+load
+render
+show
+status_bar
+restart

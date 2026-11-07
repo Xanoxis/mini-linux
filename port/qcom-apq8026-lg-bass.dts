@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * LG Watch Urbane (lg-bass)
+ *
+ * The Urbane is electrically almost identical to the LG G Watch R (lenok):
+ * same APQ8026 SoC, 320x320 round panel, touch controller, BCM43430 WiFi/BT
+ * and PMIC. This thin wrapper reuses the upstream lenok device tree and only
+ * changes the identity, plus the msm-id/board-id the stock LG bootloader (LK)
+ * needs to pick this DTB when it is appended to the kernel.
+ *
+ * Values from msm8226-mainline/linux PR #22
+ * ("ARM: dts: qcom: apq8026-lg-bass: Support LG Watch Urbane",
+ *  Antipov Kostiantyn <dev@diablosat.cc>, Oct 2026).
+ * Once that PR is merged this file is no longer needed.
+ */
+
+#include "qcom-apq8026-lg-lenok.dts"
+
+/ {
+	model = "LG Watch Urbane";
+	compatible = "lg,bass", "qcom,apq8026";
+	chassis-type = "watch";
+	qcom,msm-id = <199 0x20000>;
+	qcom,board-id = <133 0x0a>;
+};
+
+/*
+ * LG disables the PMIC battery-temperature comparator on the Urbane
+ * (downstream: qcom,btc-disabled); battery temperature comes from the
+ * bq27421 fuel gauge. Left enabled, it reads "hot" and blocks charging.
+ * Needs the small qcom_smbb patch added by the SmartLinux kit.
+ */
+&smbb {
+	qcom,disable-btc;
+};
+
+/*
+ * CPU power rail (VDD_APC = PM8226 S2), EXPERIMENTAL - SmartLinux kit, stage A2.
+ *
+ * Measured on the Urbane ("watch-cpu pmic"): S2 is an FTS buck, left by LG's
+ * bootloader in range 1 at VSET 0x73 = 1.15 V (10 mV steps), forced PWM (HPM).
+ * Qualcomm's msm8226 values: 1.05 V (<=600 MHz), 1.15 V (787 MHz), 1.28 V
+ * (turbo) for the slowest silicon; S2 limits 0.90-1.33 V.
+ * Stage A (fixed 1.20 V) worked electrically: 4 cores @600 MHz then survived
+ * ~40 s instead of ~20 s, but still reset.
+ *
+ * Stage A2: the voltage stays at the bootloader's 1.15 V at boot and can be set
+ * at runtime between 1.15 and 1.28 V through a regulator virtual consumer
+ * ("sudo watch-cpu volt 1250"), so testing needs no rebuild.
+ * Needs the kit's qcom_spmi-regulator range-split patch (stays in range 1) and
+ * CONFIG_REGULATOR_VIRTUAL_CONSUMER=y.
+ * Stage B (later): cpu-supply + opp-microvolt per clock.
+ */
+&pm8226_spmi_regulators {
+	pm8226_s2: s2 {
+		regulator-min-microvolt = <1150000>;
+		regulator-max-microvolt = <1280000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+/ {
+	/* sysfs: /sys/bus/platform/devices/cpu-rail-control/{min,max}_microvolts */
+	cpu-rail-control {
+		compatible = "regulator-virtual-consumer";
+		default-supply = <&pm8226_s2>;
+	};
+};

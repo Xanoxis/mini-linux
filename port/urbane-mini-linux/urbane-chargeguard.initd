@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+# Lowers the battery charge current while the battery is hot (see watch-charge).
+description="Battery temperature guard for charging"
+supervisor=supervise-daemon
+command=/usr/bin/watch-charge
+command_args="guard"
+
+depend() {
+	need localmount
+	after urbane-hw
+}

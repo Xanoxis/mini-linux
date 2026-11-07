@@ -1,0 +1,44 @@
+#!/bin/sh
+# watch screen - screen on/off and brightness.
+#
+#   watch screen        show state
+#   watch screen off|on|toggle
+#   watch screen 40     brightness in percent (1-100)
+#   watch screen + | -  brightness up / down by 15%
+#
+# When watch-buttond runs (it does inside the watch session) on/off goes through
+# it, so the key press or touch that wakes the screen is not passed to the app.
+set -u
+bl=$(ls -d /sys/class/backlight/* 2>/dev/null | head -n 1)
+[ -n "$bl" ] || { echo "no backlight device"; exit 1; }
+max=$(cat "$bl/max_brightness")
+cur=$(cat "$bl/brightness")
+saved="${XDG_RUNTIME_DIR:-/tmp}/watch-brightness"
+
+daemon_toggle() { pkill -USR1 -u "$(id -u)" -x watch-buttond 2>/dev/null; }
+
+set_pct() {
+	v=$(( $1 * max / 100 ))
+	[ "$v" -lt 1 ] && v=1
+	[ "$v" -gt "$max" ] && v=$max
+	echo "$v" >"$bl/brightness" || { echo "no permission (group video, urbane-hw service)"; exit 1; }
+	echo "$v" >"$saved"
+}
+
+case "${1:-}" in
+	"") [ "$cur" -gt 0 ] && echo "on, $((cur * 100 / max))%" || echo "off"; exit 0 ;;
+	off)
+		[ "$cur" -eq 0 ] && exit 0
+		daemon_toggle && exit 0
+		echo "$cur" >"$saved"; echo 0 >"$bl/brightness"; echo 4 >"$bl/bl_power" 2>/dev/null ;;
+	on)
+		[ "$cur" -gt 0 ] && exit 0
+		daemon_toggle && exit 0
+		echo 0 >"$bl/bl_power" 2>/dev/null
+		v=$(cat "$saved" 2>/dev/null || echo "$max"); echo "${v:-$max}" >"$bl/brightness" ;;
+	toggle) if [ "$cur" -gt 0 ]; then exec "$0" off; else exec "$0" on; fi ;;
+	+) p=$(( cur * 100 / max + 15 )); [ $p -gt 100 ] && p=100; set_pct $p ;;
+	-) p=$(( cur * 100 / max - 15 )); [ $p -lt 5 ] && p=5; set_pct $p ;;
+	*[!0-9]*) sed -n '2,10p' "$0"; exit 1 ;;
+	*) set_pct "$1" ;;
+esac

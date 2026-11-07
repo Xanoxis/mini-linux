@@ -1,0 +1,15 @@
+#!/bin/sh
+# Enable the services the watch session needs. Runs inside the image at build time.
+rc-update -q add seatd default 2>/dev/null
+rc-update -q add bluetooth default 2>/dev/null
+rc-update -q add urbane-btaddr default 2>/dev/null
+rc-update -q add networkmanager default 2>/dev/null
+rc-update -q add urbane-firmware boot 2>/dev/null
+rc-update -q add urbane-zram boot 2>/dev/null
+rc-update -q add urbane-hw default 2>/dev/null
+rc-update -q add urbane-cpusafe boot 2>/dev/null
+rc-update -q add urbane-chargeguard default 2>/dev/null
+rc-update -q add urbane-timesync default 2>/dev/null
+[ -e /var/lib/urbane/firstboot.done ] || rc-update -q add urbane-firstboot default 2>/dev/null
+cp /usr/share/urbane/motd /etc/motd 2>/dev/null
+exit 0

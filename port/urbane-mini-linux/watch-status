@@ -1,0 +1,57 @@
+#!/bin/sh
+# watch status - short status text for the tmux bars.
+#   watch status          "14:05 87%+ W B"   (time, battery, + = charging, WiFi up, BT on,
+#                                              N = NFC, only where the hardware has it)
+#   watch status --short  same
+#   watch status --net    "↓12K ↑3K"  WiFi download/upload per second since the last call
+#   watch status --info   "413/2496 MB · up 2h13m"  disk used/total, time since power-on
+if [ "${1:-}" = --info ]; then
+	# disk used / total in MB and the time since power-on
+	d=$(df -m / 2>/dev/null | awk 'NR == 2 { print $3 "/" $2 " MB" }')
+	u=$(cut -d. -f1 /proc/uptime)
+	m=$((u / 60))
+	if [ $m -ge 1440 ]; then up="$((m / 1440))d$(printf %02d $((m / 60 % 24)))h"
+	else up="$((m / 60))h$(printf %02d $((m % 60)))m"; fi
+	echo "${d:+$d · }up $up"
+	exit 0
+fi
+if [ "${1:-}" = --net ]; then
+	dev=$(ls -d /sys/class/net/wlan* 2>/dev/null | head -n 1)
+	[ -n "$dev" ] || { echo "no wifi"; exit 0; }
+	rx=$(cat "$dev/statistics/rx_bytes" 2>/dev/null || echo 0)
+	tx=$(cat "$dev/statistics/tx_bytes" 2>/dev/null || echo 0)
+	now=$(date +%s)
+	st="${XDG_RUNTIME_DIR:-/tmp}/watch-net.$(id -u)"
+	if read -r prx ptx pt <"$st" 2>/dev/null && [ "$now" -gt "$pt" ]; then
+		dt=$((now - pt))
+		fmt() { b=$1; if [ "$b" -ge 1048576 ]; then echo "$((b / 1048576))M"; elif [ "$b" -ge 1024 ]; then echo "$((b / 1024))K"; else echo "${b}B"; fi; }
+		echo "$rx $tx $now" >"$st"
+		echo "↓$(fmt $(((rx - prx) / dt))) ↑$(fmt $(((tx - ptx) / dt)))"
+	else
+		echo "$rx $tx $now" >"$st"
+		echo "↓- ↑-"
+	fi
+	exit 0
+fi
+
+out=$(date +%H:%M)
+for ps in /sys/class/power_supply/*; do
+	[ -r "$ps/capacity" ] || continue
+	[ "$(cat "$ps/type" 2>/dev/null)" = "Battery" ] || continue
+	cap=$(cat "$ps/capacity")
+	st=$(cat "$ps/status" 2>/dev/null)
+	case "$st" in Charging|Full) cap="$cap%+" ;; *) cap="$cap%" ;; esac
+	out="$out $cap"
+	break
+done
+for n in /sys/class/net/wlan*; do
+	[ "$(cat "$n/operstate" 2>/dev/null)" = "up" ] && { out="$out W"; break; }
+done
+for h in /sys/class/bluetooth/hci*; do
+	[ -e "$h" ] && { out="$out B"; break; }
+done
+# NFC (the W150 has no NFC chip; shown if a kernel ever finds one)
+for n in /sys/class/nfc/nfc*; do
+	[ -e "$n" ] && { out="$out N"; break; }
+done
+echo "$out"
