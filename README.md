@@ -139,5 +139,5 @@ Built on:
 AGPL 3.0, except:
 
 - `port/qcom-apq8026-lg-bass.dts` keeps its BSD-3-Clause license.
-- The kernel patches in `build/lib/pmaports_patch.py` change GPL-2.0 code.
+- The kernel patches in `build/lib/pmaports_patch.py` change GPL-2.0 code. Whoops!
 - The Mini Linux logo (`port/urbane-mini-linux/logo.png`) is my work based on LG logo, all rights reserved. Lets hope they don't notice.
