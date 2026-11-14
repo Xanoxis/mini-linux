@@ -1,0 +1,9 @@
+#!/sbin/openrc-run
+description="Maintain the logging policy and checkpoint buffered logs"
+supervisor=supervise-daemon
+command=/usr/libexec/urbane-log-checkpoint
+
+depend() {
+	need urbane-log-policy
+	after logbookd
+}

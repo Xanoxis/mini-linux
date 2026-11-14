@@ -23,6 +23,7 @@ if (-not $User) { $User = Get-WatchUser (Split-Path -Parent $OutDir) }
 $target = "$User@$WatchHost"
 
 $apks = @(Get-ChildItem (Join-Path $OutDir 'apk') -Filter *.apk -ErrorAction SilentlyContinue)
+$deps = @(Get-ChildItem (Join-Path $OutDir 'apk\deps') -Filter *.apk -ErrorAction SilentlyContinue)
 if (-not $NoKernel) {
     $kapk = Get-ChildItem (Join-Path $OutDir 'kernel') -Filter *.apk -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -36,6 +37,11 @@ if (-not $NoKernel) {
     $apks += $kapk
 }
 if ($apks.Count -eq 0) { throw "Nothing to install - run build/09-build-update.sh in WSL first." }
+if ($deps.Count) {
+    $installed = & ssh $target 'apk info'
+    if ($LASTEXITCODE -ne 0) { throw "Cannot query installed packages on $target." }
+    $apks += @($deps | Where-Object { ($_.BaseName -replace '-[0-9].*$', '') -notin $installed })
+}
 Write-Host "Packages:" ($apks.Name -join ', ')
 
 # ---- 1. packages

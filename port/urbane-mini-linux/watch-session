@@ -18,6 +18,11 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 	chmod 0700 "$XDG_RUNTIME_DIR"
 	export XDG_RUNTIME_DIR
 fi
+if [ "${1:-}" = --log ]; then
+	session_log="$XDG_RUNTIME_DIR/watch-session.log"
+	printf 'Session log: %s\n' "$session_log"
+	exec >"$session_log" 2>&1
+fi
 export LIBSEAT_BACKEND=seatd
 export WLR_RENDERER="${WLR_RENDERER:-$RENDERER}"
 export XKB_DEFAULT_LAYOUT="$KEYMAP"
@@ -43,7 +48,7 @@ fi
 # side button, screen blanking and haptics (restarted if it ever exits)
 if command -v watch-buttond >/dev/null; then
 	pkill -u "$(id -u)" -x watch-buttond 2>/dev/null
-	( while :; do watch-buttond; sleep 2; done ) >"$HOME/.cache/watch-buttond.log" 2>&1 &
+	( while :; do watch-buttond; sleep 2; done ) >"$XDG_RUNTIME_DIR/watch-buttond.log" 2>&1 &
 	buttond_loop=$!
 	trap 'kill $buttond_loop 2>/dev/null; pkill -u "$(id -u)" -x watch-buttond' EXIT INT TERM
 fi

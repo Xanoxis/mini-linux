@@ -6,10 +6,6 @@ if [ "$(tty 2>/dev/null)" = /dev/tty1 ] && [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z
 	. /etc/urbane/watch.conf
 	[ -f "$HOME/.config/urbane/watch.conf" ] && . "$HOME/.config/urbane/watch.conf"
 	if [ "$AUTOSTART" = 1 ] && command -v watch-session >/dev/null; then
-		mkdir -p "$HOME/.cache"
-		if ! watch-session >"$HOME/.cache/watch-session.log" 2>&1; then
-			echo "watch-session failed - see ~/.cache/watch-session.log"
-			echo "Plain console shell below. Retry with: watch-session"
-		fi
+		watch-session --log || echo "watch-session failed. Retry with: watch-session"
 	fi
 fi

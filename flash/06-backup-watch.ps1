@@ -7,7 +7,8 @@
   partition still holds the original Wear OS kernel, and nothing else of LG's has
   been touched. Every partition except "userdata" (where Mini Linux now lives) is
   copied into the kit's backup\ folder, with SHA-256 checksums, plus the partition
-  table (first and last MiB of the storage). Reading only - nothing is written.
+  table (first and last MiB of the storage). The source partitions are read-only
+  during backup. The dump is staged on the watch's userdata before transfer.
 
   About 1 GB; takes a few minutes over the USB cable. You are asked for the watch
   password once (sudo on the watch). Keep the backup\ folder somewhere safe: step 12

@@ -5,7 +5,11 @@ rc-update -q add bluetooth default 2>/dev/null
 rc-update -q add urbane-btaddr default 2>/dev/null
 rc-update -q add networkmanager default 2>/dev/null
 rc-update -q add urbane-firmware boot 2>/dev/null
+rc-update -q del swapfile default 2>/dev/null
+rc-update -q del postmarketos-zram-swap default 2>/dev/null
+rc-update -q add urbane-storage boot 2>/dev/null
 rc-update -q add urbane-zram boot 2>/dev/null
+/usr/libexec/urbane-log-policy configure
 rc-update -q add urbane-hw default 2>/dev/null
 rc-update -q add urbane-cpusafe boot 2>/dev/null
 rc-update -q add urbane-chargeguard default 2>/dev/null

@@ -18,7 +18,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 KIT=$(dirname "$HERE")
-PATCH="python3 $HERE/lib/pmaports_patch.py"
+PATCH=(python3 "$HERE/lib/pmaports_patch.py")
 die() { echo "error: $*" >&2; exit 1; }
 
 command -v pmbootstrap >/dev/null || die "pmbootstrap not found - run build/01-setup-wsl.sh"
@@ -40,7 +40,7 @@ for ASTEROID_URL in \
 	https://release.asteroidos.org/nightlies/bass/asteroid-bass-boot.img \
 	https://release.asteroidos.org/nightlies/bass/zImage-dtb-bass.fastboot; do
 	if curl -fsSL --max-time 120 -r 0-4095 -o "$TMP/bass.img" "$ASTEROID_URL" 2>/dev/null &&
-		OFFSETS=$($PATCH offsets "$TMP/bass.img"); then
+		OFFSETS=$("${PATCH[@]}" offsets "$TMP/bass.img"); then
 		echo "    using $OFFSETS"
 		echo "    (from $ASTEROID_URL)"
 		break
@@ -63,14 +63,14 @@ find "$BASS" -type f -exec sed -i \
 	-e 's/LG G Watch R/LG Watch Urbane/g' \
 	-e 's/firmware-lg-bass-/firmware-lg-lenok-/g' {} +
 if [ -n "$OFFSETS" ]; then
-	$PATCH device "$BASS" --offsets "$OFFSETS"
+	"${PATCH[@]}" device "$BASS" --offsets "$OFFSETS"
 else
-	$PATCH device "$BASS"
+	"${PATCH[@]}" device "$BASS"
 fi
 
 # ---------------------------------------------------------------- kernel
 echo "==> Patching kernel package $KERNEL"
-$PATCH kernel "$KERNEL" "$KIT/port/qcom-apq8026-lg-bass.dts"
+"${PATCH[@]}" kernel "$KERNEL" "$KIT/port/qcom-apq8026-lg-bass.dts"
 
 # ---------------------------------------------------------------- customisation package
 echo "==> Installing urbane-mini-linux package into pmaports"

@@ -1,0 +1,17 @@
+#!/bin/sh
+# logbookd handles the final save when OpenRC stops it.
+policy=/usr/libexec/urbane-log-policy
+mode_file=/run/urbane-logging/mode
+
+sleeper=
+trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM INT
+while :; do
+	read -r mode <"$mode_file" || exit 1
+	interval=$("$policy" delay) || exit 1
+	sleep "$interval" &
+	sleeper=$!
+	wait "$sleeper" || exit 1
+	sleeper=
+	"$policy" tick
+	[ "$mode" != buffered ] || rc-service -q logbookd save
+done

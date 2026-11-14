@@ -51,9 +51,13 @@ pad_for() {
 
 render() {
 	pad=$(pad_for "$VIEWPORT")
-	mkdir -p "$HOME/.config/foot"
-	sed -e "s|@FONT@|$FONT|" -e "s|@FONT_PX@|$FONT_PX|" -e "s|@PAD@|$pad|g" \
-		/usr/share/urbane/foot.ini.in >"$HOME/.config/foot/foot.ini"
+	config="$HOME/.config/foot/foot.ini"
+	generated=$(sed -e "s|@FONT@|$FONT|" -e "s|@FONT_PX@|$FONT_PX|" -e "s|@PAD@|$pad|g" \
+		/usr/share/urbane/foot.ini.in)
+	if ! printf '%s\n' "$generated" | cmp -s - "$config"; then
+		mkdir -p "${config%/*}"
+		printf '%s\n' "$generated" >"$config"
+	fi
 }
 
 show() {

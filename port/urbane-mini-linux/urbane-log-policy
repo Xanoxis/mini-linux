@@ -1,0 +1,200 @@
+#!/bin/sh
+# The watch's wall clock can jump at boot. Count powered-on seconds instead.
+set -eu
+state=/var/lib/urbane/logging
+runtime=/run/urbane-logging
+first_day=86400
+recovery_time=7200
+
+uptime_seconds() {
+	read -r uptime _ </proc/uptime
+	printf '%s\n' "${uptime%%.*}"
+}
+
+write_state() {
+	printf '%s\n' "$2" >"$1.new"
+	sync "$1.new"
+	mv -f "$1.new" "$1"
+	sync "$state"
+}
+
+elapsed() {
+	read -r base <"$runtime/initial-seconds"
+	total=$((base + $(uptime_seconds)))
+	[ "$total" -le "$first_day" ] || total=$first_day
+}
+
+record_elapsed() {
+	elapsed
+	old=$(cat "$state/seconds" 2>/dev/null || echo 0)
+	case "$old" in ''|*[!0-9]*) old=0 ;; esac
+	if [ "$total" -gt "$old" ]; then
+		write_state "$state/seconds" "$total"
+	fi
+}
+
+preference() {
+	requested=$(cat "$state/preference" 2>/dev/null || echo auto)
+	case "$requested" in ram|flash) ;; *) requested=auto ;; esac
+}
+
+managed() {
+	grep -qxF 'LOGBOOKD_OPTS="-r -g 8192 -d /var/log/logbookd.db"' /etc/conf.d/logbookd 2>/dev/null &&
+		grep -qF '/run/urbane-logging/mode' /etc/conf.d/logbookd
+}
+
+require_active() {
+	if ! managed || [ ! -r "$runtime/mode" ]; then
+		echo "watch logs: Mini Linux logging policy is inactive. Check logbookd configuration and reboot after updating." >&2
+		exit 1
+	fi
+}
+
+select_mode() {
+	case "$requested" in
+		ram) mode=buffered; return ;;
+		flash) mode=persistent; return ;;
+	esac
+	elapsed
+	mode=buffered
+	if [ "$total" -lt "$first_day" ] ||
+		{ [ -f "$state/recovery" ] && [ "$(uptime_seconds)" -lt "$recovery_time" ]; }; then
+		mode=persistent
+	fi
+}
+
+apply_mode() {
+	read -r previous <"$runtime/mode"
+	[ "$mode" != "$previous" ] || return 0
+	printf '%s\n' "$mode" >"$runtime/mode.new"
+	mv -f "$runtime/mode.new" "$runtime/mode"
+	if ! rc-service -q logbookd restart; then
+		printf '%s\n' "$previous" >"$runtime/mode.new"
+		mv -f "$runtime/mode.new" "$runtime/mode"
+		rc-service logbookd start
+		return 1
+	fi
+}
+
+status() {
+	preference
+	read -r active <"$runtime/mode"
+	printf 'Policy: %s\n' "$requested"
+	case "$active" in
+		buffered) echo 'Mode: RAM buffering with hourly and shutdown saves' ;;
+		persistent) echo 'Mode: direct writes to flash' ;;
+	esac
+}
+
+case "${1:-}" in
+	configure)
+		conf=/etc/conf.d/logbookd
+		[ -x /etc/init.d/logbookd ] || exit 0
+		if grep -qxE 'LOGBOOKD_OPTS="-r -g 8192 -d /(run|var/log)/logbookd\.db"' "$conf" &&
+			! grep -qF '/run/urbane-logging/mode' "$conf"; then
+			# OpenRC sources this before the logbookd service script.
+			sed -i 's|/run/logbookd\.db|/var/log/logbookd.db|' "$conf"
+			cat >>"$conf" <<'EOF'
+
+# Mini Linux selects direct writes during first use and recovery.
+if [ "$LOGBOOKD_OPTS" = "-r -g 8192 -d /var/log/logbookd.db" ] &&
+	[ "$(cat /run/urbane-logging/mode 2>/dev/null)" = persistent ]; then
+	LOGBOOKD_OPTS="-g 8192 -d /var/log/logbookd.db"
+fi
+EOF
+		fi
+		if grep -qF '/run/urbane-logging/mode' "$conf"; then
+			rc-update -q add urbane-log-policy boot
+			rc-update -q add urbane-log-checkpoint default
+		fi
+		;;
+	boot)
+		mkdir -p "$state" "$runtime"
+		[ ! -f "$runtime/initial-seconds" ] || exit 0
+		boot_id=$(cat /proc/sys/kernel/random/boot_id)
+		previous=$(cat "$state/boot" 2>/dev/null || true)
+		if { [ -n "$previous" ] && [ "$previous" != "$boot_id" ]; } ||
+			grep -qiE '(^| )(androidboot\.)?bootreason=[^ ]*(panic|watchdog|wdog)' /proc/cmdline; then
+			[ -f "$state/recovery" ] || write_state "$state/recovery" 1
+		fi
+		write_state "$state/boot" "$boot_id"
+		initial=$(cat "$state/seconds" 2>/dev/null || echo 0)
+		case "$initial" in ''|*[!0-9]*) initial=0 ;; esac
+		printf '%s\n' "$initial" >"$runtime/initial-seconds"
+		preference
+		select_mode
+		printf '%s\n' "$mode" >"$runtime/mode"
+		;;
+	tick)
+		record_elapsed
+		if [ -f "$state/recovery" ] && [ "$(uptime_seconds)" -ge "$recovery_time" ]; then
+			rm -f "$state/recovery"
+			sync "$state"
+		fi
+		preference
+		select_mode
+		apply_mode
+		;;
+	status)
+		require_active
+		status
+		;;
+	set)
+		require_active
+		case "${2:-}" in auto|ram|flash) requested=$2 ;; *) exit 2 ;; esac
+		if ! mkdir "$runtime/change-lock" 2>/dev/null; then
+			echo "watch logs: another mode change is in progress" >&2
+			exit 1
+		fi
+		trap 'rmdir "$runtime/change-lock"; rc-service -q urbane-log-checkpoint start' EXIT
+		# Stop the timer while changing modes so it cannot restart logbookd
+		# concurrently and a new RAM interval starts immediately.
+		rc-service -q urbane-log-checkpoint stop
+		select_mode
+		apply_mode
+		if [ "$(cat "$state/preference" 2>/dev/null || echo auto)" != "$requested" ]; then
+			write_state "$state/preference" "$requested"
+		fi
+		rc-service -q urbane-log-checkpoint start
+		rmdir "$runtime/change-lock"
+		trap - EXIT
+		status
+		;;
+	save)
+		require_active
+		read -r active <"$runtime/mode"
+		if [ "$active" = persistent ]; then
+			echo 'System logs are already written directly to flash.'
+		else
+			rc-service logbookd save
+		fi
+		;;
+	delay)
+		read -r current <"$runtime/mode"
+		if [ "$current" = buffered ]; then
+			echo 3600
+		else
+			# Limit time lost from the first-day counter after an abrupt reset.
+			elapsed
+			delay=300
+			remaining=$((first_day - total))
+			if [ "$remaining" -gt 0 ] && [ "$remaining" -lt "$delay" ]; then
+				delay=$remaining
+			fi
+			if [ -f "$state/recovery" ]; then
+				remaining=$((recovery_time - $(uptime_seconds)))
+				if [ "$remaining" -gt 0 ] && [ "$remaining" -lt "$delay" ]; then
+					delay=$remaining
+				fi
+			fi
+			echo "$delay"
+		fi
+		;;
+	shutdown)
+		[ -f "$runtime/initial-seconds" ] || exit 0
+		record_elapsed
+		rm -f "$state/boot"
+		sync "$state"
+		;;
+	*) exit 2 ;;
+esac

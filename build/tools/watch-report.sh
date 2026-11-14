@@ -15,6 +15,10 @@ sec "display"; ls -la /dev/dri 2>&1; for s in /sys/class/drm/*/status; do [ -e "
 sec "input"; cat /proc/bus/input/devices 2>&1 | grep -E '^(N|H):'
 sec "power"; for p in /sys/class/power_supply/*; do [ -e "$p" ] || continue; echo "-- $p"; for f in type status capacity voltage_now current_now online health; do [ -r $p/$f ] && echo "  $f=$(cat $p/$f)"; done; done
 sec "modules"; lsmod 2>&1 | head -60
-sec "watch-session log"; cat ~/.cache/watch-session.log 2>&1 | tail -40
+sec "watch-session log"
+for dir in "/tmp/$(id -u)-runtime" "/run/user/$(id -u)" "$HOME/.cache"; do
+	[ -r "$dir/watch-session.log" ] || continue
+	tail -40 "$dir/watch-session.log"; break
+done
 sec "storage"; df -h; lsblk 2>/dev/null || cat /proc/partitions
 sec "end"

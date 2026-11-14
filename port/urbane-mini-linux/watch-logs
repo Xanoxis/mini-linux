@@ -1,0 +1,23 @@
+#!/bin/sh
+# watch logs - show or change system logging mode.
+#
+#   watch logs          show the selected policy and active mode
+#   watch logs auto     use the first-day and crash-recovery policy
+#   watch logs ram      buffer in RAM with hourly and shutdown saves
+#   watch logs flash    write system logs directly to flash
+#   watch logs save     request an immediate save in RAM mode
+#
+# Mode overrides survive reboot. Use auto to restore automatic crash recovery.
+set -eu
+policy=/usr/libexec/urbane-log-policy
+[ "$#" -le 1 ] || { echo "Usage: watch logs [auto|ram|flash|save]" >&2; exit 2; }
+case "${1:-}" in
+	'') exec "$policy" status ;;
+	auto|ram|flash|save)
+		[ "$(id -u)" = 0 ] || { echo "watch logs: administrator privileges required" >&2; exit 1; }
+		if [ "$1" = save ]; then
+			exec "$policy" save
+		fi
+		exec "$policy" set "$1" ;;
+	*) echo "Usage: watch logs [auto|ram|flash|save]" >&2; exit 2 ;;
+esac

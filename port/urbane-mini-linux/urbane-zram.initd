@@ -1,11 +1,11 @@
 #!/sbin/openrc-run
-# Compressed swap in RAM. The Urbane has 512 MB; zram roughly doubles usable memory
-# for terminal workloads without wearing out the eMMC.
+# Compressed swap in RAM. ZRAM_SIZE limits the uncompressed data it can hold.
 
 description="zram swap"
 
 depend() {
 	need localmount
+	provide swap
 }
 
 start() {

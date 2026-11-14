@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+description="Select system logging mode and track unclean restarts"
+command=/usr/libexec/urbane-log-policy
+
+depend() {
+	need localmount
+	before logbookd
+}
+
+start() {
+	"$command" boot
+}
+
+stop() {
+	# Only a real OpenRC shutdown should mark the boot clean.
+	[ "${RC_RUNLEVEL:-}" != shutdown ] || "$command" shutdown
+}

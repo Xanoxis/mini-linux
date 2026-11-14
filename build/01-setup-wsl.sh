@@ -21,7 +21,7 @@ if ! command -v pmbootstrap >/dev/null 2>&1; then
 		   export PATH="$HOME/.local/bin:$PATH" ;;
 	esac
 fi
-pmbootstrap --version
+pmbootstrap -V
 
 if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
 	echo "==> Creating an SSH key (pmbootstrap can copy it onto the watch)"

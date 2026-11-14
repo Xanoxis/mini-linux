@@ -15,7 +15,7 @@ EXPORT="$HOME/nura-export-lg-bass"
 echo "==> Rebuilding the kit packages (pmbootstrap would otherwise reuse stale builds)"
 pmbootstrap shutdown >/dev/null 2>&1 || true
 pmbootstrap build --force device-lg-bass
-pmbootstrap build --force --arch armv7 urbane-mini-linux
+bash "$HERE/09-build-update.sh"
 
 echo "==> Building and installing the rootfs (you will be asked for the user password)"
 pmbootstrap install "$@"

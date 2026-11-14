@@ -136,7 +136,7 @@ log_on() {
 		while :; do
 			k=$(dmesg | tail -n 1 | cut -c1-120)
 			if [ "$k" != "$last" ]; then crumb "| $k"; last=$k; else crumb ""; fi
-			sync
+			sync "$LOG"
 			sleep 1
 		done
 	) >>$LOG 2>&1 &
@@ -154,9 +154,18 @@ log_off() {
 stress() { # seconds
 	need_root
 	t=${1:-60}
+	case "$t" in *[!0-9]*) die "test duration must be in seconds" ;; esac
+	[ "$t" -gt 0 ] || die "test duration must be positive"
+	started_log=0
+	if ! { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }; then
+		started_log=1
+	fi
 	log_on
-	crumb "test start: $(online_list) for ${t}s" >>$LOG; sync
+	crumb "test start: $(online_list) for ${t}s" >>$LOG; sync "$LOG"
 	pids=""
+	trap 'kill $pids 2>/dev/null; [ "$started_log" = 0 ] || log_off >/dev/null' EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 	for d in $C/cpu[0-9]; do
 		[ "$(rd "$d/online" || echo 1)" = 1 ] || continue
 		# a busy loop per online core (md5 of zeros keeps the core fully busy)
@@ -166,7 +175,8 @@ stress() { # seconds
 	echo "loading cores $(online_list) for ${t}s ... (watch: $(freqs))"
 	sleep "$t"
 	kill $pids 2>/dev/null
-	crumb "test passed" >>$LOG; sync
+	pids=""
+	crumb "test passed" >>$LOG; sync "$LOG"
 	echo "passed: no crash with cores $(online_list) at max $(mhz $C/cpu0/cpufreq/scaling_max_freq) MHz"
 }
 

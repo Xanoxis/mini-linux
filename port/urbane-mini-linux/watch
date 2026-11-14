@@ -14,6 +14,7 @@ TOPICS='set|watch-set|root|system settings, live (watch set KEY VALUE / watch se
 cpu|watch-cpu|root|CPU cores, clock, governor, idle, test, crash log
 charge|watch-charge|root|battery, charger, input current, temperature guard
 power|watch-power|root|reboot, poweroff, fastboot
+logs|watch-logs|root|system logging mode and manual checkpoint
 screen|watch-screen||screen on/off and brightness
 view|watch-viewport||screen layout (round / full / square), font, keymap
 rotate|watch-rotate||turn the picture by 0 / 90 / 180 / 270 degrees

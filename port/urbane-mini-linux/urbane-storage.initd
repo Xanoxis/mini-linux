@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+description="Reduce eMMC writes from filesystem access and temporary files"
+
+depend() {
+	need localmount
+	after tmpfs
+	before bootmisc
+}
+
+start() {
+	ebegin "Setting up low-write storage"
+	# Preserve the existing root mount flags. The default root is ext4.
+	root_options=$(awk '$2 == "/" && $3 == "ext4" && $4 !~ /(^|,)noatime(,|$)/ { print $4 }' /proc/mounts)
+	if [ -n "$root_options" ]; then
+		mount -o "remount,$root_options,noatime" / || ewarn "Could not enable noatime on /"
+	fi
+
+	# Respect an existing /tmp mount, including one configured by the base OS.
+	# The size is a limit on allocation, not preallocated RAM.
+	if ! mountinfo -q /tmp; then
+		mount -t tmpfs -o mode=1777,nosuid,nodev,noatime,size=64M tmpfs /tmp ||
+			ewarn "Could not mount /tmp in RAM"
+	fi
+	eend 0
+}
